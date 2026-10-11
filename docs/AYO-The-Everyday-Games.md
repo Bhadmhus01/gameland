@@ -435,7 +435,90 @@ against.
 
 ---
 
-## 11. What is already built
+## 11. What we measure
+
+A daily game is one habit long. If people do not come back tomorrow, nothing
+else on this page matters — not the finale, not the sponsors, not the federation
+of national leagues. So the product measures one thing and measures it properly.
+
+### The question, and the numbers that answer it
+
+**Did the people who opened the game today come back tomorrow?**
+
+Four numbers answer that, and they are the only four collected per day:
+
+| | |
+|---|---|
+| **Opens** | how many times the game was opened, split into first-ever devices and devices seen before |
+| **Starts** | how many of those opens began a round |
+| **Finishes** | how many were seen through to a submitted score |
+| **Abandons** | started, then left without a score |
+
+Every open that was not a first-ever device is a return. That is the whole
+mechanism: a daily game's health is the ratio between people arriving and people
+coming back, and it is visible within two days of launch rather than at the end
+of a quarter.
+
+The cohort table then answers the durable version of the question — of the
+people who first arrived on a given day, what share were still playing on day 1,
+day 7, day 30? Those are the three horizons because those are the three the
+business model actually depends on: day 1 is whether the game is any good, day 7
+is whether it is a habit, and day 30 is whether it is a habit that survives a
+bad week.
+
+**One honesty rule is built into the arithmetic: a horizon that has not
+elapsed is reported as "not yet measurable", never as zero.** A cohort that
+arrived yesterday cannot have a day-30 rate. Rendering that as 0% would be a
+lie dressed as a number, and it is the most common way a dashboard misleads the
+people reading it.
+
+### What is deliberately not collected
+
+The instrument is striking for what is absent, and that absence is the design:
+
+- **No name, no country, no score, no email.** An event carries four fields: a
+  name, a time, the round, and a random id made on the device.
+- **No third party.** Not an analytics vendor, not an ad network, not even a
+  CDN font. The client posts to AYO's own server and nowhere else. This is what
+  makes the game weigh ~200 KB, and it is also why nobody else can build a
+  profile of an AYO player.
+- **No cookies, no fingerprinting, no cross-site anything.** The id cannot
+  follow anyone to another site because it is never shared with one.
+- **No free-form payload.** The server accepts an allowlisted event name, caps
+  a batch at 64, and stamps the date itself. A client cannot write arbitrary
+  content into the store, and cannot write activity into any day but today.
+- **The operator's own report contains no ids.** The `/api/retention` payload is
+  aggregates only, so even someone reading it learns nothing about a person.
+
+### Refusable, in one tap
+
+Do Not Track is honoured automatically. Beyond that, the player can switch
+counting off from inside the Fair Play screen — the same screen that makes the
+fairness claims — and switching off **deletes anything already queued** rather
+than merely stopping the next batch. Turning it back on is one more tap.
+
+This is a small thing and it is the point: a game whose entire proposition is
+"I will not tilt the contest against you" cannot quietly profile the people it
+is measuring. The instrument is described in the app, in the same place and the
+same voice as the charter, and it is switchable.
+
+### Growth is bounded by design
+
+Nothing here can grow without limit. A device's history is capped at 120 days
+(the longest horizon is 30), tracked devices are capped at 20,000, day
+aggregates are capped at 400 days, and the local send queue is capped at 120
+events. The instrument must never become the thing that fills a disk.
+
+### Why this had to come before anything else
+
+Retention instrumentation is usually added after launch, when someone asks why
+the numbers are falling — and by then the first month of the only period that
+cannot be re-run is already gone. Because this game's launch market is
+deliberately one country at a time, the first cohort is also the smallest and
+the least forgiving: Nigeria's numbers will be read closely, and they need to be
+trustworthy on day one rather than reconstructed in hindsight.
+
+## 12. What is already built
 
 This repository contains a **working prototype of the entire daily game**, not a
 mockup.
@@ -453,7 +536,7 @@ mockup.
 - One-scored-attempt-per-day enforced on the server
 - Offline play: the full game shell is cached, submissions queue and resync
 - Installable as a phone app (PWA), self-hosted fonts, no third-party trackers
-- A 47-check end-to-end test suite covering the API, every screen, every
+- A 57-check end-to-end test suite covering the API, every screen, every
   discipline, all seven scoring curves, every attempt to cheat the endpoint, and
   a fairness suite that deletes colour from 720 generated puzzles to prove the
   pattern round is solvable without colour vision
@@ -477,12 +560,13 @@ is a contained change behind a single function.
 
 ---
 
-## 12. The next ninety days
+## 13. The next ninety days
 
 | Weeks | Deliverable |
 |---|---|
 | 1–2 | Accounts (phone-number optional), season rollups, admin tooling |
 | 3–4 | ~~Accessibility pass: colour-independent cues, silent rhythm mode~~ — **done, see below**. Remaining: larger touch targets, keyboard-only paths |
+| 3–4 | ~~Retention instrumentation~~ — **done, see "What we measure"**. Now it needs a real cohort: launch Nigeria and read the day-1 rate |
 | 5–6 | Hausa, Yoruba, Igbo and Nigerian Pidgin interfaces; then French, Arabic, Portuguese, Hindi, Bahasa |
 | 7–8 | Lagos pilot with three universities and two radio groups; instrument retention |
 | 9–10 | Curve re-fit from real pilot data; publish the first national norms |
@@ -494,7 +578,7 @@ with a broadcaster attached.
 
 ---
 
-## 13. Why now
+## 14. Why now
 
 Three things became true at roughly the same moment:
 

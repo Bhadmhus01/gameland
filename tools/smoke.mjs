@@ -93,7 +93,7 @@ await step("GET /api/country?country=NG", async () => {
 
 /* 2. Every module imports cleanly. */
 console.log("\nmodules");
-let engine, countries, ui, store, api, games, views;
+let engine, countries, ui, store, api, games, views, retention, analytics;
 await step("import engine / countries / ui / store / api / games / views", async () => {
   engine = await import("../public/js/engine.js");
   countries = await import("../public/js/countries.js");
@@ -102,6 +102,8 @@ await step("import engine / countries / ui / store / api / games / views", async
   api = await import("../public/js/api.js");
   games = await import("../public/js/games.js");
   views = await import("../public/js/views.js");
+  retention = await import("../public/js/retention.js");
+  analytics = await import("../public/js/analytics.js");
   return `${engine.DISCIPLINES.length} disciplines · ${countries.COUNTRIES.length} countries`;
 });
 
@@ -890,7 +892,295 @@ await step("a date query is bounded to the rotation window", async () => {
   return `${far} rejected · ${back} and ${fwd} still served`;
 });
 
-/* 12. Boot the whole application exactly as a browser would. */
+/* 12. Retention instrumentation.
+ *
+ * The instrument is only worth having if its arithmetic is pinned to known
+ * input. These tests drive the SAME functions the server uses through a
+ * simulated month, with a cohort whose answer we already know, and then check
+ * the endpoint refuses everything it should.
+ */
+
+await step("a known cohort produces exactly the known retention", async () => {
+  // 20 devices arrive on day 0. Exactly 10 come back on day 1. Exactly 5 of
+  // those same 10 also come back on day 7. Nobody comes back on day 30.
+  const today = "2026-10-11";
+  // 40 days back, so the D30 horizon has elapsed and the whole span sits
+  // inside a 90-day report window.
+  const day0 = retention.addDays(today, -40);
+  const players = {};
+  const days = {};
+  const count = (day, name) => {
+    days[day] = days[day] || { open: 0, first: 0, return: 0, start: 0, finish: 0 };
+    days[day][name]++;
+  };
+
+  for (let i = 0; i < 20; i++) {
+    const id = `device${String(i).padStart(3, "0")}`;
+    const fold = retention.recordDeviceDay(players, id, day0);
+    count(day0, "open");
+    if (fold.isNew) count(day0, "first");
+    if (i < 10) {
+      const back = retention.recordDeviceDay(players, id, retention.addDays(day0, 1));
+      count(retention.addDays(day0, 1), "open");
+      if (back.isReturn) count(retention.addDays(day0, 1), "return");
+      if (i < 5) {
+        const week = retention.recordDeviceDay(players, id, retention.addDays(day0, 7));
+        count(retention.addDays(day0, 7), "open");
+        if (week.isReturn) count(retention.addDays(day0, 7), "return");
+      }
+    }
+  }
+
+  const report = retention.buildReport({ days, players }, { today, window: 90 });
+  const cohort = report.cohort.cohorts[0];
+
+  if (cohort.size !== 20) throw new Error(`cohort size ${cohort.size}, expected 20`);
+  if (cohort.rates[1] !== 50) throw new Error(`D1 ${cohort.rates[1]}%, expected exactly 50%`);
+  if (cohort.rates[7] !== 25) throw new Error(`D7 ${cohort.rates[7]}%, expected exactly 25%`);
+  if (cohort.rates[30] !== 0) throw new Error(`D30 ${cohort.rates[30]}%, expected exactly 0%`);
+
+  // And the funnel split must count them the same way.
+  const open = Object.values(days).reduce((a, d) => a + d.open, 0);
+  const first = Object.values(days).reduce((a, d) => a + d.first, 0);
+  const back = Object.values(days).reduce((a, d) => a + d.return, 0);
+  if (open !== 35) throw new Error(`opens ${open}, expected 35 (20 + 10 + 5)`);
+  if (first !== 20) throw new Error(`firsts ${first}, expected exactly 20`);
+  if (back !== 15) throw new Error(`returns ${back}, expected exactly 15`);
+  if (report.funnel.total.startRate !== 0) throw new Error("start rate should be 0 with no starts recorded");
+
+  return `D1 50% · D7 25% · D30 0% · opens 35 = 20 first + 15 return`;
+});
+
+await step("the same day twice is not retention", async () => {
+  const players = {};
+  retention.recordDeviceDay(players, "repeatdevice", "2026-09-01");
+  const again = retention.recordDeviceDay(players, "repeatdevice", "2026-09-01");
+  if (again.isReturn) throw new Error("opening the app twice in one day counted as coming back");
+  const tomorrow = retention.recordDeviceDay(players, "repeatdevice", "2026-09-02");
+  if (!tomorrow.isReturn) throw new Error("coming back the next day did not count");
+  return "twice in one day: no · next day: yes";
+});
+
+await step("a horizon that has not elapsed is not reported as zero", async () => {
+  const players = {};
+  // Arrived today: neither D1 nor D7 could possibly have happened yet.
+  retention.recordDeviceDay(players, "todaydevice", "2026-10-11");
+  // Arrived yesterday: D1 could have happened (and did not), D7 could not.
+  retention.recordDeviceDay(players, "yesterdaydevice", "2026-10-10");
+
+  const table = retention.cohortTable(players, "2026-10-11");
+  const todayRow = table.cohorts.find((c) => c.date === "2026-10-11");
+  const yRow = table.cohorts.find((c) => c.date === "2026-10-10");
+
+  if (todayRow.rates[1] !== null) throw new Error(`D1 for a same-day cohort reported as ${todayRow.rates[1]}, expected null`);
+  if (todayRow.rates[7] !== null) throw new Error("D7 reported for a same-day cohort");
+  if (yRow.rates[1] !== 0) throw new Error(`D1 for a one-day-old cohort should be a real 0%, got ${yRow.rates[1]}`);
+  if (yRow.rates[7] !== null) throw new Error(`D7 reported for a one-day-old cohort as ${yRow.rates[7]}`);
+  // And the unmeasurable ones must not be folded into the headline average.
+  if (table.overall[7].cohortSize !== 0) throw new Error("unelapsed horizons leaked into the weighted overall");
+  return "same-day: null · one-day-old: D1 0% and D7 null · nothing unelapsed in the average";
+});
+
+await step("an empty instrument says so instead of showing zeros", async () => {
+  const report = retention.buildReport({ days: {}, players: {} }, { today: "2026-10-11", window: 30 });
+  if (!report.empty) throw new Error("an empty store did not report itself as empty");
+  if (report.cohort.overall[1].measurable) throw new Error("an empty store claimed a measurable D1");
+  return "empty is reported as empty, not as zero retention";
+});
+
+await step("activity is bounded, so the instrument cannot fill the disk", async () => {
+  const players = {};
+  const start = "2026-01-01";
+  for (let d = 0; d < 400; d++) {
+    retention.recordDeviceDay(players, "longlived", retention.addDays(start, d));
+  }
+  const kept = players.longlived.days.length;
+  if (kept > retention.KEEP_DAYS_PER_PLAYER) {
+    throw new Error(`kept ${kept} days, cap is ${retention.KEEP_DAYS_PER_PLAYER}`);
+  }
+  const pruned = retention.prunePlayers(players, retention.addDays(start, 399));
+  if (!pruned.players.longlived) throw new Error("pruning dropped a recently-active device");
+  if (pruned.players.longlived.days.length > retention.KEEP_DAYS_PER_PLAYER) {
+    throw new Error("pruning left more days than the cap allows");
+  }
+  return `400 days of activity capped to ${kept} · pruning kept the active device`;
+});
+
+await step("the events endpoint accepts the allowlist and refuses the rest", async () => {
+  const device = "smoke" + RUN.toLowerCase();
+
+  const good = await fetch(`${BASE}/api/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      items: [
+        { e: "open", d: device },
+        { e: "start", d: device },
+        { e: "finish", d: device },
+      ],
+    }),
+  }).then((r) => r.json());
+  if (!good.ok) throw new Error(JSON.stringify(good));
+  if (good.accepted !== 3) throw new Error(`accepted ${good.accepted}, expected 3`);
+
+  // An unknown event name, and a device id that is not a device id.
+  const mixed = await fetch(`${BASE}/api/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      items: [
+        { e: "open", d: device },
+        { e: "<script>alert(1)</script>", d: device },
+        { e: "open", d: "not a device id" },
+        { e: "open", d: device, p: { enormous: "x".repeat(5000) } },
+      ],
+    }),
+  }).then((r) => r.json());
+  if (mixed.rejected < 1) throw new Error("an unknown event name was accepted");
+  if (mixed.accepted !== 3) throw new Error(`accepted ${mixed.accepted} of 4, expected 3`);
+
+  const tooBig = await fetch(`${BASE}/api/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ items: Array.from({ length: 65 }, () => ({ e: "open", d: device })) }),
+  });
+  if (tooBig.status !== 400) throw new Error(`a 65-event batch returned ${tooBig.status}, expected 400`);
+
+  const notArray = await fetch(`${BASE}/api/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ items: "everything" }),
+  });
+  if (notArray.status !== 400) throw new Error("a non-array batch was accepted");
+
+  return "3 accepted · unknown name refused · 65-event batch refused";
+});
+
+await step("the report never leaks a device id", async () => {
+  const report = await fetch(`${BASE}/api/retention`).then((r) => r.json());
+  const text = JSON.stringify(report);
+  if (text.includes("smoke" + RUN.toLowerCase())) {
+    throw new Error("the retention report exposed a device id");
+  }
+  if (report.funnel?.total?.open === undefined) throw new Error("report has no funnel");
+  if (!report.cohort?.overall) throw new Error("report has no cohort table");
+  return `aggregates only · ${report.funnel.total.open} opens in the window`;
+});
+
+await step("analytics can be refused, and refusing forgets", async () => {
+  // Do Not Track on: nothing is sent.
+  const savedDnt = Object.getOwnPropertyDescriptor(window.navigator, "doNotTrack");
+  try {
+    Object.defineProperty(window.navigator, "doNotTrack", { value: "1", configurable: true });
+    analytics.forget();
+    if (analytics.currentPreference()) throw new Error("Do Not Track was ignored");
+    analytics.track("open");
+    // Nothing queued and nothing sent.
+    const sent = await analytics.flush();
+    if (sent !== 0) throw new Error(`sent ${sent} events while opted out`);
+
+    // An explicit yes overrides the browser, because the player is the authority.
+    analytics.setPreference(true);
+    if (!analytics.currentPreference()) throw new Error("choosing to take part did not take effect");
+    if (analytics.queueLength() !== 1) throw new Error("opting in did not record the session");
+    const yes = await analytics.flush();
+    if (yes !== 1) throw new Error(`opted in, but sent ${yes} events`);
+
+    // And off really means off: what was queued is discarded, not sent later.
+    analytics.track("open");
+    analytics.setPreference(false);
+    const afterOptOut = await analytics.flush();
+    if (afterOptOut !== 0) throw new Error("turning it off still sent the queued event");
+  } finally {
+    if (savedDnt) Object.defineProperty(window.navigator, "doNotTrack", savedDnt);
+    else delete window.navigator.doNotTrack;
+    analytics.setPreference(true);
+    analytics.forget();
+  }
+  return "Do Not Track honoured · opt-out discards the queue · opt-in overrides the browser";
+});
+
+await step("retention survives a restart, a save and a reload", async () => {
+  // This is the regression test for the worst bug this lane produced: the
+  // server rebuilt its store from a whitelist on boot, so analytics was
+  // thrown away every restart and the report showed a clean, empty, plausible
+  // chart. The cycle below is exactly what a restart does.
+  const days = {};
+  const players = {};
+  const count = (day, key) => {
+    days[day] = days[day] || { open: 0, first: 0, return: 0, start: 0, finish: 0 };
+    days[day][key]++;
+  };
+
+  for (const id of ["keepa1", "keepb2", "keepc3"]) {
+    const f = retention.recordDeviceDay(players, id, "2026-10-01");
+    count("2026-10-01", "open");
+    if (f.isNew) count("2026-10-01", "first");
+  }
+  // Next day: two of the three come back.
+  for (const id of ["keepa1", "keepb2"]) {
+    const f = retention.recordDeviceDay(players, id, "2026-10-02");
+    count("2026-10-02", "open");
+    if (f.isReturn) count("2026-10-02", "return");
+  }
+
+  const before = retention.buildReport({ days, players }, { today: "2026-10-03", window: 30 });
+
+  // --- what a restart does: serialise, parse, normalise ---
+  const onDisk = JSON.parse(JSON.stringify({ version: 1, players: {}, rounds: {}, analytics: { days, players } }));
+  const reloaded = retention.normaliseAnalytics(onDisk.analytics);
+
+  const after = retention.buildReport(reloaded, { today: "2026-10-03", window: 30 });
+
+  if (after.empty) throw new Error("analytics were empty after a save/load cycle");
+  if (after.funnel.total.open !== before.funnel.total.open) {
+    throw new Error(`opens changed across a restart: ${before.funnel.total.open} → ${after.funnel.total.open}`);
+  }
+  if (after.funnel.total.return !== 2) throw new Error(`returns lost: ${after.funnel.total.return}, expected 2`);
+  if (after.cohort.cohorts[0].size !== 3) throw new Error(`cohort size lost: ${after.cohort.cohorts[0].size}`);
+  if (after.cohort.overall[1].rate !== 66.7) {
+    throw new Error(`D1 changed across a restart: ${after.cohort.overall[1].rate}%, expected 66.7%`);
+  }
+
+  // A third day after the reload must still recognise the returning devices —
+  // this is the day-rollover path the funnel's return counter depends on.
+  const fold = retention.recordDeviceDay(reloaded.players, "keepa1", "2026-10-03");
+  if (!fold.isReturn) throw new Error("a device known before the restart was treated as new after it");
+
+  // And unreadable data is replaced, not trusted.
+  const junk = retention.normaliseAnalytics({ days: "nope", players: [1, 2, 3] });
+  if (Object.keys(junk.days).length || Object.keys(junk.players).length) {
+    throw new Error("malformed analytics were accepted instead of reset");
+  }
+
+  return "opens 5 · returns 2 · D1 66.7% · unchanged across a restart";
+});
+
+await step("the player can switch counting off from inside the game", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  host.append(views.viewRules({ refresh() {}, state: {} }));
+  const buttons = [...host.querySelectorAll("button")].filter((b) => /counting/i.test(b.textContent));
+  if (buttons.length !== 1) throw new Error(`found ${buttons.length} counting controls, expected 1`);
+  const btn = buttons[0];
+
+  analytics.setPreference(true);
+  const wasOn = analytics.currentPreference();
+
+  btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  if (analytics.currentPreference() === wasOn) throw new Error("the control did not change anything");
+  if (analytics.currentPreference()) throw new Error("clicking did not switch counting off");
+  if (analytics.queueLength() !== 0) throw new Error("switching off left events queued");
+
+  btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  if (!analytics.currentPreference()) throw new Error("clicking again did not switch counting back on");
+
+  analytics.setPreference(true);
+  host.remove();
+  return "one control · switches off, clears the queue, switches back on";
+});
+
+/* 13. Boot the whole application exactly as a browser would. */
 console.log("\napp boot (full client, live server)");
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));

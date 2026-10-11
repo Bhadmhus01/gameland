@@ -15,6 +15,7 @@ import { api } from "./api.js";
 import { store } from "./store.js";
 import { h, mount, sheet, toast, confetti, fmt, ordinal, buzz } from "./ui.js";
 import { buildGame } from "./games.js";
+import * as analytics from "./analytics.js";
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -274,6 +275,7 @@ export function viewToday(app) {
         await submit(appRef, raw, host);
       },
     };
+    if (!practice) analytics.track("start");
     game = buildGame(d.id, ctx);
     mount(stage, game.el);
     // Mounted first, scrolled second: if scrolling is unavailable the game is
@@ -306,6 +308,7 @@ export function viewToday(app) {
         raw,
       });
       const streak = store.bumpStreak(round.date);
+      analytics.track("finish");
       store.saveResult(round.roundId, {
         score: res.score,
         percentile: res.percentile,
@@ -1123,6 +1126,64 @@ export function viewRules(app) {
           )
         )
       )
+    )
+  );
+
+  /* --- what we count ------------------------------------------------
+   * The instrument is described here in the same place as the charter,
+   * because a game that asks to be trusted about fairness should be equally
+   * upfront about being watched. It is switchable, in one tap. */
+  root.append(
+    h(
+      "div",
+      { class: "card" },
+      h("div", { class: "eyebrow", text: "Counting" }),
+      h("h3", { text: "What we measure, and what we never do" }),
+      h("p", {
+        class: "small muted",
+        style: { marginTop: "10px" },
+        text:
+          "To know whether this game is worth your time tomorrow, we count one thing: " +
+          "whether people come back. That is four fields — an event, a time, the round, " +
+          "and a random id made on your device. No name, no country, no score, and no " +
+          "third party of any kind. Nothing is sold, and nothing is shared.",
+      }),
+      h(
+        "div",
+        { class: "row wraprow", style: { marginTop: "14px", gap: "10px" } },
+        (() => {
+          const label = h("span", { class: "pill", text: "" });
+          const paint = () => {
+            const on = analytics.currentPreference();
+            label.textContent = on ? "counting: on" : "counting: off";
+            label.className = "pill " + (on ? "green" : "coral");
+          };
+          paint();
+          const caption = (on) => (on ? "Turn counting off" : "Turn counting on");
+          const btn = h("button", {
+            class: "btn ghost small",
+            text: caption(analytics.currentPreference()),
+            onclick: () => {
+              const now = !analytics.currentPreference();
+              analytics.setPreference(now);
+              btn.textContent = caption(now);
+              paint();
+              toast(
+                now
+                  ? "Thank you — that is genuinely useful."
+                  : "Counting off. Nothing you do is recorded.",
+                "ok"
+              );
+            },
+          });
+          return [label, btn];
+        })()
+      ),
+      h("p", {
+        class: "tiny",
+        style: { marginTop: "10px", color: "#8b98c6" },
+        text: "Do Not Track is honoured automatically, and turning counting off deletes anything queued immediately. The operator's own report never contains an id.",
+      })
     )
   );
 

@@ -45,7 +45,7 @@ BASE=http://127.0.0.1:3100 node tools/seed.mjs  # against another instance
 
 ```bash
 npm install --no-save jsdom       # only the test needs this
-node tools/smoke.mjs              # 47 checks: API, views, all 7 games, fairness, input trust, anti-cheat
+node tools/smoke.mjs              # 57 checks: API, views, all 7 games, fairness, retention, input trust, anti-cheat
 BASE=http://127.0.0.1:3100 node tools/smoke.mjs
 ```
 
@@ -117,6 +117,47 @@ discipline showing unexplained regional bias is rewritten or retired in public.
   as humans.
 - No personal data is collected beyond a nickname, a country and a score.
 
+### What is measured
+
+One question only: **do people come back tomorrow?** Everything else is
+downstream of it, so the instrument is built around that and not around vanity
+numbers.
+
+| | |
+|---|---|
+| `public/js/analytics.js` | client capture — batched, capped, switchable, honours Do Not Track |
+| `public/js/retention.js` | the maths, pure and shared by server, tool and tests |
+| `POST /api/events` | ingest — allowlisted names, server-assigned date, ≤64 per batch |
+| `GET /api/retention` | the report — aggregates only, never a device id |
+| `tools/retention.mjs` | the operator report, plus `--simulate` |
+
+Recorded per calendar day: opens, first-ever devices, returning devices, rounds
+started, rounds finished, rounds abandoned. Recorded per device: the day it was
+first seen and the days it was active. That is all — **four fields per event**
+(name, time, round, random device id), no name, no country, no score.
+
+Privacy is structural, not a promise: there is no third party, no CDN, no
+cookie and no fingerprint. The id is generated on the device and tied to
+nothing. Do Not Track is honoured automatically, the player can switch counting
+off in the Fair Play screen (which deletes anything queued), and the operator's
+own report never contains an id.
+
+```bash
+node tools/retention.mjs                 # the report, from data/store.json
+node tools/retention.mjs --json          # machine-readable
+node tools/retention.mjs --simulate 40   # a scratch store, to see it working
+```
+
+`--simulate` exists because a retention chart that has never been shown known
+input is a decoration. It invents a plausible cohort in a **scratch** store so
+the instrument can be checked before launch, and so "no data yet" is never
+mistaken for "no retention" — the report says which of the two it is.
+
+Growth is bounded in both directions: 120 days of history per device, 20,000
+devices tracked, 400 days of aggregates. The cohort horizons are 1, 7 and 30
+days, and a horizon that has not yet elapsed is reported as `null` with a
+reason, never as a fake 0%.
+
 ### Colour and accessibility
 
 Colour is **never** the dimension being tested. Every shape carries a fixed
@@ -180,7 +221,7 @@ public/
   fonts/                    Self-hosted Anton + Inter (no third-party CDN, no tracking)
 tools/
   seed.mjs                  Seed named demonstration players
-  smoke.mjs                 47-check end-to-end suite (needs jsdom, test-only)
+  smoke.mjs                 57-check end-to-end suite (needs jsdom, test-only)
   color-science.mjs         CVD simulation + perceptual distance, for the palette test
 data/store.json             Persisted rounds, players, boards
 docs/                       Concept, strategy and business document
@@ -210,7 +251,7 @@ client and server to disagree about them.
 
 Working today: the daily loop, all seven disciplines, three leaderboards, the
 national page, the Fairness Charter, career history, offline play, PWA install,
-and a 47-check end-to-end suite.
+and a 57-check end-to-end suite.
 
 Not yet built: accounts (identity is deliberately device-local for the prototype),
 season rollups, the filmed finale production, and moderation tooling. The daily

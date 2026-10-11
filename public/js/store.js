@@ -22,6 +22,10 @@ const DEFAULTS = {
   queue: [],     // unsent submissions (offline resilience)
   streak: { last: "", count: 0 },
   seen: false,
+  // Retention instrumentation: null means "not chosen yet", so the browser's
+  // Do Not Track setting decides. True or false is the player's own answer and
+  // always wins.
+  analytics: null,
 };
 
 let state = load();
@@ -104,9 +108,26 @@ export const store = {
     state.seen = true;
     persist();
   },
+  get analyticsPref() {
+    return state.analytics === undefined ? null : state.analytics;
+  },
+  setAnalyticsPref(on) {
+    state.analytics = !!on;
+    persist();
+  },
+  /** How many distinct days this device has played, ever. */
+  get daysPlayed() {
+    const seen = new Set();
+    for (const [roundId, r] of Object.entries(state.results)) {
+      if (r && r.at) seen.add(new Date(r.at).toISOString().slice(0, 10));
+      else if (roundId) seen.add(roundId);
+    }
+    return seen.size;
+  },
   reset() {
     const dev = state.deviceId;
-    state = { ...DEFAULTS, deviceId: dev };
+    const pref = state.analytics;
+    state = { ...DEFAULTS, deviceId: dev, analytics: pref };
     persist();
   },
 };

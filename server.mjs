@@ -32,6 +32,7 @@ import {
   rng,
 } from "./public/js/engine.js";
 import { COUNTRIES, BY_ISO, nameOf } from "./public/js/countries.js";
+import { buildReport, prunePlayers, recordDeviceDay, normaliseAnalytics } from "./public/js/retention.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -58,15 +59,99 @@ async function loadStore() {
     const raw = await fsp.readFile(STORE_FILE, "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
+      // Spread first, then pin the known shapes.
+      //
+      // This used to be a whitelist of exactly {version, players, rounds},
+      // which meant every other top-level field was thrown away on boot — and
+      // retention analytics was one of them. Restarting the server wiped the
+      // entire history, and the report would have shown an empty chart that
+      // looked like "not enough data yet" rather than "we deleted it".
       store = {
+        ...parsed,
         version: 1,
         players: parsed.players || {},
         rounds: parsed.rounds || {},
+        analytics: normaliseAnalytics(parsed.analytics),
       };
     }
   } catch {
     /* first boot — start empty */
   }
+}
+
+/**
+ * Retention instrumentation.
+ *
+ * Two things are recorded, both aggregate or pseudonymous:
+ *
+ *   analytics.days    — per calendar day, funnel counters. No identifiers.
+ *   analytics.players — per random device id, the first day seen and the list
+ *                       of days active. No name, no country, no score, and the
+ *                       id is generated on the device and tied to nothing.
+ *
+ * Nothing here is shared with anyone, and no third party is involved: the
+ * client posts to this server and nothing else. See the concept document,
+ * "What we measure".
+ */
+function analytics() {
+  if (!store.analytics) store.analytics = { days: {}, players: {}, updatedAt: 0 };
+  if (!store.analytics.days) store.analytics.days = {};
+  if (!store.analytics.players) store.analytics.players = {};
+  return store.analytics;
+}
+
+/** Event names the server will accept. An allowlist, not a free-for-all. */
+const EVENT_NAMES = new Set(["open", "start", "finish", "abandon", "share", "sync", "practice"]);
+
+/** Cap on how many days of funnel counters are kept. One year is plenty. */
+const KEEP_ANALYTICS_DAYS = 400;
+
+function recordEvents(items, todayStr) {
+  const a = analytics();
+  let accepted = 0;
+  let rejected = 0;
+
+  for (const item of items) {
+    const name = String(item?.e || "");
+    if (!EVENT_NAMES.has(name)) {
+      rejected++;
+      continue;
+    }
+    // The day is the server's, never the client's: otherwise one caller could
+    // write activity into any date in the calendar.
+    const day = item?.date && /^\d{4}-\d{2}-\d{2}$/.test(item.date) && item.date === todayStr ? item.date : todayStr;
+
+    const d = (a.days[day] = a.days[day] || {});
+    d[name] = (Number(d[name]) || 0) + 1;
+
+    // Per-player active days, for the cohort table. Requires a sane device id.
+    const id = String(item?.d || "").slice(0, 32);
+    if (!/^[a-z0-9]{6,32}$/.test(id)) {
+      accepted++;
+      continue;
+    }
+    // The device-day accounting lives in retention.js so it can be tested
+    // through a simulated month; this is only the adapter.
+    const fold = recordDeviceDay(a.players, id, day);
+    if (fold.isNew) d.first = (Number(d.first) || 0) + 1;
+    else if (fold.isReturn) d.return = (Number(d.return) || 0) + 1;
+    accepted++;
+  }
+
+  a.updatedAt = Date.now();
+  // Keep the window bounded in both directions.
+  const keep = Object.keys(a.days).sort().slice(-KEEP_ANALYTICS_DAYS);
+  for (const k of Object.keys(a.days)) if (!keep.includes(k)) delete a.days[k];
+
+  return { accepted, rejected };
+}
+
+/** Drop activity that has aged out of every horizon we report on. */
+function pruneAnalytics(todayStr) {
+  const a = analytics();
+  const { players, droppedDays, droppedPlayers } = prunePlayers(a.players, todayStr);
+  a.players = players;
+  return { droppedDays, droppedPlayers };
 }
 
 function saveStore() {
@@ -573,6 +658,32 @@ async function handleApi(req, res, url) {
     return sendJson(res, out.ok ? 200 : out.code || 400, out);
   }
 
+  /* --- retention events -----------------------------------------------
+   * Deliberately small and deliberately plain: an allowlisted event name, the
+   * server's own date, and a random device id. No free-form payload reaches
+   * the store, so this endpoint cannot be used to write arbitrary content.
+   */
+  if (p === "/api/events" && req.method === "POST") {
+    const body = await readBody(req);
+    if (!body || !Array.isArray(body.items)) return sendJson(res, 400, { error: "bad_body" });
+    if (body.items.length > 64) return sendJson(res, 400, { error: "batch_too_large", max: 64 });
+
+    const out = recordEvents(body.items, today());
+    saveStore();
+    return sendJson(res, 200, { ok: true, accepted: out.accepted, rejected: out.rejected });
+  }
+
+  /* --- the retention report ---------------------------------------------
+   * Aggregates only: no device ids leave this endpoint, so being readable
+   * tells a visitor nothing about any individual. The operator reads the same
+   * numbers through tools/retention.mjs.
+   */
+  if (p === "/api/retention" && req.method === "GET") {
+    const raw = Number(q.get("window"));
+    const window = Number.isFinite(raw) ? Math.min(90, Math.max(7, Math.round(raw))) : 30;
+    return sendJson(res, 200, buildReport(analytics(), { today: today(), window }));
+  }
+
   /* --- batch submit (offline queue) ---------------------------------- */
   if (p === "/api/submit-batch" && req.method === "POST") {
     const body = await readBody(req);
@@ -981,6 +1092,18 @@ function throttle(req, res) {
 }
 
 await loadStore();
+
+// Instrumentation older than every horizon we report on is dead weight, so it
+// is shed on boot and every few hours after. Recorded day counters survive
+// far longer (400 days) than per-device activity (120 days) on purpose:
+// aggregates are anonymous and tiny, device history is not.
+pruneAnalytics(today());
+saveStore();
+setInterval(() => {
+  pruneAnalytics(today());
+  saveStore();
+}, 6 * 3600 * 1000).unref();
+
 server.listen(PORT, HOST, () => {
   console.log(`AYO — The Everyday Games running on http://${HOST}:${PORT}`);
   console.log(

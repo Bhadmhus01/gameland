@@ -8,6 +8,7 @@ import { flag, nameOf } from "./countries.js";
 import { api } from "./api.js";
 import { store } from "./store.js";
 import { h, mount, toast } from "./ui.js";
+import { track, trackOpen, installLifecycle, flush as flushEvents } from "./analytics.js";
 import {
   viewToday,
   viewBoard,
@@ -267,6 +268,17 @@ function startup() {
 
   // Flush anything queued while offline.
   api.flush();
+
+  // The return signal, recorded as early in boot as possible: if anything
+  // below fails, we still know the player opened the game today.
+  trackOpen();
+  // A round screen that was opened and then left without a score is the
+  // single most useful failure the funnel can show us.
+  window.addEventListener("beforeunload", () => {
+    if (app.state.tab === "today" && !app.state.myResult) track("abandon");
+    flushEvents();
+  });
+  installLifecycle();
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
