@@ -308,7 +308,14 @@ function sendJson(res, code, body) {
   res.end(data);
 }
 
+/**
+ * The server's notion of the current day.
+ * AYO_DATE pins it, for previewing a round without waiting for the rotation to
+ * reach it (or for re-checking a past round). Development and QA only.
+ */
 function today() {
+  const pinned = process.env.AYO_DATE;
+  if (pinned && /^\d{4}-\d{2}-\d{2}$/.test(pinned)) return pinned;
   return utcDateString(new Date());
 }
 
@@ -673,6 +680,23 @@ function recordSubmission(item) {
     return { ok: false, code: 409, error: "round_closed", roundId };
   }
 
+  // The round decides the discipline, not the client.
+  //
+  // Without this check a player can submit a perfect "Inner Clock" result on a
+  // social-intuition day: the score is computed honestly, but on a task the
+  // world was never given, and it takes rank 1. Every discipline has a
+  // different curve, so without this the ceiling is one crafted request away.
+  const todays = disciplineForDate(dateStr);
+  if (discipline.id !== todays.id) {
+    return {
+      ok: false,
+      code: 409,
+      error: "wrong_discipline",
+      expected: todays.id,
+      roundId,
+    };
+  }
+
   const pseudo = String(item.pseudo || "").trim().slice(0, 18);
   const iso = String(item.country || "").toUpperCase();
   if (pseudo.length < 2) return { ok: false, code: 400, error: "bad_pseudo" };
@@ -869,5 +893,8 @@ function throttle(req, res) {
 await loadStore();
 server.listen(PORT, HOST, () => {
   console.log(`AYO — The Everyday Games running on http://${HOST}:${PORT}`);
-  console.log(`Round ${roundIdOf(today())} · today's discipline: ${disciplineForDate(today()).name}`);
+  console.log(
+    `Round ${roundIdOf(today())} · today's discipline: ${disciplineForDate(today()).name}` +
+      (process.env.AYO_DATE ? `  [pinned to ${process.env.AYO_DATE} by AYO_DATE]` : "")
+  );
 });

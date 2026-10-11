@@ -618,19 +618,91 @@ await step("the Fairness Charter tells the truth about accessibility", async () 
 /* 10. Submission round-trips through the real endpoints. */
 console.log("\nsubmission");
 
-await step("POST /api/submit round-trips and scores", async () => {
-  const res = await fetch(`${BASE}/api/submit`, {
+/**
+ * The suite must be runnable against any day of the rotation, so submissions
+ * are built from whatever discipline is actually live rather than hardcoded.
+ * (Hardcoding one is how a missing discipline check went unnoticed.)
+ */
+const liveRound = await (await fetch(`${BASE}/api/rounds/today`)).json();
+const liveDiscipline = liveRound.discipline.id;
+
+const GOOD_RAW = {
+  time: { elapsed: 10.3, target: 10 },
+  jar: { count: 120, guess: 118 },
+  sequence: { length: 11 },
+  pulse: { period: 640, meanInterval: 645, sdInterval: 20 },
+  odd: { solved: 5, totalSeconds: 12 },
+  pattern: { solved: 6, totalSeconds: 26 },
+  wisdom: { choice: 1 },
+};
+const WEAK_RAW = {
+  time: { elapsed: 24, target: 10 },
+  jar: { count: 120, guess: 30 },
+  sequence: { length: 4 },
+  pulse: { period: 640, meanInterval: 1500, sdInterval: 420 },
+  odd: { solved: 1, totalSeconds: 60 },
+  pattern: { solved: 1, totalSeconds: 120 },
+  wisdom: { choice: 3 },
+};
+
+const post = (body) =>
+  fetch(`${BASE}/api/submit`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      roundId: "r0001",
-      discipline: "jar",
-      pseudo: "Smoke_" + RUN,
-      country: "NG",
-      raw: { count: 120, guess: 119 },
-    }),
+    body: JSON.stringify(body),
+  }).then((r) => r.json());
+
+await step(`a result for any other discipline is refused (today is ${liveRound.discipline.name})`, async () => {
+  // The exploit this guards: submit a perfect result for a discipline that is
+  // not today's, and take rank 1 with the easiest curve.
+  const other = engine.DISCIPLINES.find((d) => d.id !== liveDiscipline).id;
+  const otherRaw = GOOD_RAW[other];
+
+  const res = await post({
+    roundId: liveRound.roundId,
+    discipline: other,
+    pseudo: "Cherry_" + RUN,
+    country: "NG",
+    raw: otherRaw,
   });
-  const j = await res.json();
+  if (res.ok) {
+    throw new Error(
+      `a perfect "${other}" result was accepted on a "${liveDiscipline}" day and scored ${res.score}`
+    );
+  }
+  if (res.error !== "wrong_discipline") {
+    throw new Error(`refused with "${res.error}", expected "wrong_discipline"`);
+  }
+  if (res.expected !== liveDiscipline) {
+    throw new Error(`server reported expected "${res.expected}", wanted "${liveDiscipline}"`);
+  }
+
+  // And the honest path still works, so the check is not simply blocking everything.
+  const good = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: "Honest_" + RUN,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+  });
+  if (!good.ok) throw new Error(`today's own discipline was refused: ${good.error}`);
+  // Exact scores depend on the curve and the field, so the bar is "top of the
+  // world", not 1000. Wisdom is scored against the world's answer, so it is
+  // excluded: a near-perfect result there is whatever the crowd agreed on.
+  if (liveDiscipline !== "wisdom" && good.score < 900) {
+    throw new Error(`a near-perfect result scored only ${good.score}`);
+  }
+  return `"${other}" refused · "${liveDiscipline}" scored ${good.score}`;
+});
+
+await step("POST /api/submit round-trips and scores", async () => {
+  const j = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: "Smoke_" + RUN,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+  });
   if (!j.ok) throw new Error(JSON.stringify(j));
   if (!(j.score >= 0 && j.score <= 1000)) throw new Error("score out of range");
   if (!j.verdict) throw new Error("no verdict");
@@ -639,13 +711,13 @@ await step("POST /api/submit round-trips and scores", async () => {
 
 await step("server rejects malformed and forged payloads", async () => {
   const cases = [
-    ["bad country", { discipline: "jar", pseudo: "Ok_Name", country: "ZZ", raw: { count: 10, guess: 10 } }],
-    ["short pseudo", { discipline: "jar", pseudo: "x", country: "NG", raw: { count: 10, guess: 10 } }],
-    ["out-of-range", { discipline: "jar", pseudo: "Ok_Name", country: "NG", raw: { count: 999999, guess: 10 } }],
-    ["missing raw", { discipline: "jar", pseudo: "Ok_Name", country: "NG" }],
-    ["wrong discipline", { discipline: "moonwalk", pseudo: "Ok_Name", country: "NG", raw: {} }],
-    ["non-numeric raw", { discipline: "jar", pseudo: "Ok_Name", country: "NG", raw: { count: "lots", guess: 10 } }],
-    ["bad date round", { roundId: "r9999", discipline: "jar", pseudo: "Ok_Name", country: "NG", raw: { count: 10, guess: 10 } }],
+    ["bad country", { discipline: liveDiscipline, pseudo: "Ok_Name", country: "ZZ", raw: GOOD_RAW[liveDiscipline] }],
+    ["short pseudo", { discipline: liveDiscipline, pseudo: "x", country: "NG", raw: GOOD_RAW[liveDiscipline] }],
+    ["bad date round", { roundId: "r9999", discipline: liveDiscipline, pseudo: "Ok_Name", country: "NG", raw: GOOD_RAW[liveDiscipline] }],
+    ["unknown discipline", { discipline: "moonwalk", pseudo: "Ok_Name", country: "NG", raw: {} }],
+    ["non-numeric raw", { discipline: liveDiscipline, pseudo: "Ok_Name", country: "NG", raw: { count: "lots", guess: 10 } }],
+    ["missing raw", { discipline: liveDiscipline, pseudo: "Ok_Name", country: "NG" }],
+    ["invented raw keys", { discipline: liveDiscipline, pseudo: "Ok_Name", country: "NG", raw: { nonsense: 1 } }],
   ];
   for (const [label, body] of cases) {
     const r = await fetch(`${BASE}/api/submit`, {
@@ -654,48 +726,48 @@ await step("server rejects malformed and forged payloads", async () => {
       body: JSON.stringify(body),
     });
     if (r.ok) throw new Error(`${label} was accepted`);
+    // Guard against passing for the wrong reason: these must fail on their own
+    // merits, not merely because the payload names the wrong discipline.
+    const j = await r.json();
+    if (j.error === "wrong_discipline") {
+      throw new Error(`${label} was refused as wrong_discipline, not on its own merits`);
+    }
   }
   return `${cases.length} malformed payloads refused`;
 });
 
 await step("extra fields a client invents are ignored, never trusted", async () => {
   // A cheater sending their own score alongside a poor result must not be believed.
-  const r = await fetch(`${BASE}/api/submit`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      roundId: "r0001",
-      discipline: "jar",
-      pseudo: "Forged_" + RUN,
-      country: "NG",
-      raw: { count: 100, guess: 50 },
-      score: 1000,
-      percentile: 99.9,
-      verdict: "Untouchable",
-    }),
+  const j = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: "Forged_" + RUN,
+    country: "NG",
+    raw: WEAK_RAW[liveDiscipline],
+    score: 1000,
+    percentile: 99.9,
+    verdict: "Untouchable",
   });
-  const j = await r.json();
   if (j.score === 1000) throw new Error("invented score was trusted");
-  if (j.score > 400) throw new Error(`expected a mediocre score, got ${j.score}`);
+  // Wisdom is scored against the world's answer, so its floor is not ours to set.
+  if (liveDiscipline !== "wisdom" && j.score > 500) {
+    throw new Error(`expected a weak score from a weak result, got ${j.score}`);
+  }
   return `client claimed 1000 · server computed ${j.score}`;
 });
 
 await step("one scored attempt per day is enforced", async () => {
-  const post = (guess) =>
-    fetch(`${BASE}/api/submit`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        roundId: "r0001",
-        discipline: "jar",
-        pseudo: "Daily_" + RUN,
-        country: "NG",
-        raw: { count: 120, guess },
-      }),
-    }).then((r) => r.json());
+  const one = (raw) =>
+    post({
+      roundId: liveRound.roundId,
+      discipline: liveDiscipline,
+      pseudo: "Daily_" + RUN,
+      country: "NG",
+      raw,
+    });
 
-  const first = await post(119); // excellent
-  const second = await post(40); // deliberately terrible, hoping to overwrite
+  const first = await one(GOOD_RAW[liveDiscipline]); // excellent
+  const second = await one(WEAK_RAW[liveDiscipline]); // deliberately terrible, hoping to overwrite
   if (first.replay) throw new Error("first attempt was flagged as a replay");
   if (!second.replay) throw new Error("second attempt was scored again");
   if (second.score !== first.score) throw new Error("a second attempt changed the score");
@@ -703,21 +775,18 @@ await step("one scored attempt per day is enforced", async () => {
 });
 
 await step("a client-declared score is ignored", async () => {
-  const r = await fetch(`${BASE}/api/submit`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      roundId: "r0001",
-      discipline: "jar",
-      pseudo: "Honest_" + RUN,
-      country: "GH",
-      raw: { count: 100, guess: 40 },
-      score: 1000,
-    }),
+  const j = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: "Claimed_" + RUN,
+    country: "GH",
+    raw: WEAK_RAW[liveDiscipline],
+    score: 1000,
   });
-  const j = await r.json();
   if (j.score === 1000) throw new Error("client score was trusted");
-  if (j.score > 400) throw new Error(`expected a poor score, got ${j.score}`);
+  if (liveDiscipline !== "wisdom" && j.score > 500) {
+    throw new Error(`expected a weak score, got ${j.score}`);
+  }
   return `claimed 1000, server awarded ${j.score}`;
 });
 

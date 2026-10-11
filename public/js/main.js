@@ -3,7 +3,7 @@
  * Tabs, data loading, and the daily flow. No framework, no build step.
  */
 
-import { utcDateString } from "./engine.js";
+
 import { flag, nameOf } from "./countries.js";
 import { api } from "./api.js";
 import { store } from "./store.js";
@@ -26,10 +26,23 @@ const TABS = [
   ["career", "My Tower"],
 ];
 
+/**
+ * ?date=YYYY-MM-DD pins the round, for previewing a day that has not arrived.
+ * Without it the server decides what "today" is, which is the normal path.
+ */
+const pinnedDate = (() => {
+  try {
+    const d = new URLSearchParams(location.search).get("date") || "";
+    return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : "";
+  } catch {
+    return "";
+  }
+})();
+
 const app = {
   state: {
     tab: "today",
-    date: utcDateString(),
+    date: pinnedDate,
     round: null,
     board: null,
     boardPlayers: null,
@@ -129,13 +142,16 @@ function render() {
 /* --------------------------------------------------------------------- data */
 
 async function loadAll(opts = {}) {
-  const date = app.state.date;
-  app.state.myResult = store.todayResult(date);
+  if (app.state.date) app.state.myResult = store.todayResult(app.state.date);
   try {
     const [round, board] = await Promise.all([
-      api.today(date, store.identity.deviceId),
-      api.leaderboard(date, "world"),
+      api.today(app.state.date || undefined, store.identity.deviceId),
+      api.leaderboard(app.state.date || undefined, "world"),
     ]);
+    // Adopt the server's notion of the current round, so a pinned preview day
+    // and the normal daily path behave identically from here on.
+    app.state.date = round.date;
+    app.state.myResult = store.todayResult(round.date);
     app.state.round = round;
     app.state.board = board;
     app.state.boardPlayers = board.players;

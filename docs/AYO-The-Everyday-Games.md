@@ -295,6 +295,18 @@ contest is real, there is no audience and no sponsor.
     or touch; the seventh can be listened to. Each one declares what it demands
     of a player's body, in the app, so the claim can be checked.
 
+### The round decides the task, not the player
+
+One further hole was found while testing the above, and closed: the submission
+endpoint checked that the named discipline *existed* but not that it was
+**today's** discipline. A player on a social-intuition day could therefore post
+a perfect timing result — scored honestly by the server — and take rank 1 on a
+task the world was never given. Every discipline has a different curve, so
+without that check the ceiling was one crafted request away. The endpoint now
+refuses any result whose discipline is not the round's, and the regression test
+is run against four different days of the rotation so it cannot be satisfied by
+accident on one of them.
+
 ### How cheating is actually prevented
 
 | Attack | Defence |
@@ -420,7 +432,7 @@ mockup.
 - One-scored-attempt-per-day enforced on the server
 - Offline play: the full game shell is cached, submissions queue and resync
 - Installable as a phone app (PWA), self-hosted fonts, no third-party trackers
-- A 41-check end-to-end test suite covering the API, every screen, every
+- A 42-check end-to-end test suite covering the API, every screen, every
   discipline, all seven scoring curves, every attempt to cheat the endpoint, and
   a fairness suite that deletes colour from 720 generated puzzles to prove the
   pattern round is solvable without colour vision

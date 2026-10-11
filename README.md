@@ -23,7 +23,14 @@ node server.mjs                  # http://localhost:3000
 PORT=8080 node server.mjs        # different port
 HOST=127.0.0.1 node server.mjs   # bind locally only
 AYO_STORE=data/other.json node server.mjs   # use a separate data file
+AYO_DATE=2026-10-13 node server.mjs         # pin the round to a chosen day (dev/QA)
 ```
+
+`AYO_DATE` exists so a round can be checked without waiting for the rotation to
+reach it — including past rounds, which is the only way to re-verify a day that
+has already been played. In the browser, `?date=YYYY-MM-DD` does the same thing
+for the client. Both are development tools: with neither set, the server decides
+what "today" is, which is the normal path.
 
 The board is never empty: the server generates a deterministic, clearly-labelled
 **demo world** for territories where the game has not launched, and
@@ -38,7 +45,7 @@ BASE=http://127.0.0.1:3100 node tools/seed.mjs  # against another instance
 
 ```bash
 npm install --no-save jsdom       # only the test needs this
-node tools/smoke.mjs              # 41 checks: API, views, all 7 games, fairness, anti-cheat
+node tools/smoke.mjs              # 42 checks: API, views, all 7 games, fairness, anti-cheat
 BASE=http://127.0.0.1:3100 node tools/smoke.mjs
 ```
 
@@ -173,7 +180,7 @@ public/
   fonts/                    Self-hosted Anton + Inter (no third-party CDN, no tracking)
 tools/
   seed.mjs                  Seed named demonstration players
-  smoke.mjs                 41-check end-to-end suite (needs jsdom, test-only)
+  smoke.mjs                 42-check end-to-end suite (needs jsdom, test-only)
   color-science.mjs         CVD simulation + perceptual distance, for the palette test
 data/store.json             Persisted rounds, players, boards
 docs/                       Concept, strategy and business document
@@ -203,7 +210,7 @@ client and server to disagree about them.
 
 Working today: the daily loop, all seven disciplines, three leaderboards, the
 national page, the Fairness Charter, career history, offline play, PWA install,
-and a 41-check end-to-end suite.
+and a 42-check end-to-end suite.
 
 Not yet built: accounts (identity is deliberately device-local for the prototype),
 season rollups, the filmed finale production, and moderation tooling. The daily
