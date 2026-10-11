@@ -45,7 +45,7 @@ BASE=http://127.0.0.1:3100 node tools/seed.mjs  # against another instance
 
 ```bash
 npm install --no-save jsdom       # only the test needs this
-node tools/smoke.mjs              # 64 checks: API, views, all 7 games, fairness, retention, identity, input trust, anti-cheat
+node tools/smoke.mjs              # 74 checks: API, views, all 7 games, fairness, retention, identity, season, input trust, anti-cheat
 BASE=http://127.0.0.1:3100 node tools/smoke.mjs
 ```
 
@@ -116,6 +116,55 @@ discipline showing unexplained regional bias is rewritten or retired in public.
 - Simulated players are labelled `demo` everywhere they appear and never counted
   as humans.
 - No personal data is collected beyond a nickname, a country and a score.
+
+### The season
+
+A season is **12 weeks — 84 rounds**. The rotation puts all seven faculties in
+every week (engine invariant 3), so anyone who plays a full week has faced the
+identical seven challenges as everyone else on Earth. That property is what
+makes ranking a season meaningful in a way ranking single rounds is not.
+
+```bash
+curl 'localhost:3000/api/season'          # the season table, rules included
+curl 'localhost:3000/api/tower?deviceId=X' # your own tower (device id, not a credential)
+node tools/retention.mjs                   # a different question: do people come back
+```
+
+**The qualification rule: your best 40 rounds of 84, with a floor of 24.**
+
+| | |
+|---|---|
+| Counted | your best 40 rounds by score |
+| To qualify | at least 24 rounds played |
+| Ranked by | season total, then the weakest counted round, then rounds played, then account id |
+
+Both numbers are chosen against **connectivity**, not convenience:
+
+- Requiring all 84 rounds would exclude anyone whose phone, power or data fails
+  on a given day. That measures income, not skill — and it would exclude exactly
+  the people this game claims to exist for.
+- Summing everything played rewards grinding, and makes a single absent day a
+  permanent penalty.
+- Averaging everything played lets four lucky rounds beat eighty good ones.
+  That is the "play once, score perfect" failure the daily board already had to
+  fix once.
+
+The honest tension is documented rather than hidden: a player who plays more
+rounds has more chances to fill their best 40, so reliable data is still an
+advantage in contention. It is bounded — the 41st-best round is worth nothing —
+and the floor is low enough to clear on a patchy connection.
+
+Nations rank by **median of their qualifying players**, for the same reason the
+daily board does: population must not buy a place and one prodigy must not carry
+a country. A nation needs 5 qualifiers before it is ranked at all, and until
+then it is listed as unranked with the number still needed — never with a rank
+it has not earned. **The demo world never competes**; qualifying for a televised
+finale by simulation would be absurd.
+
+Mid-season, nobody is declared qualified in week one of twelve:
+`qualified` only after the season ends, `on_track` for anyone above the floor,
+`at_risk` while the floor is still reachable, and `out` — with the arithmetic
+shown — once it is not.
 
 ### Identity, and moderation
 
@@ -276,7 +325,7 @@ public/
   fonts/                    Self-hosted Anton + Inter (no third-party CDN, no tracking)
 tools/
   seed.mjs                  Seed named demonstration players
-  smoke.mjs                 64-check end-to-end suite (needs jsdom, test-only)
+  smoke.mjs                 74-check end-to-end suite (needs jsdom, test-only)
   color-science.mjs         CVD simulation + perceptual distance, for the palette test
 data/store.json             Persisted rounds, players, boards
 docs/                       Concept, strategy and business document
@@ -306,7 +355,7 @@ client and server to disagree about them.
 
 Working today: the daily loop, all seven disciplines, three leaderboards, the
 national page, the Fairness Charter, career history, offline play, PWA install,
-and a 64-check end-to-end suite.
+and a 74-check end-to-end suite.
 
 Not yet built: accounts (identity is deliberately device-local for the prototype),
 season rollups, the filmed finale production, and moderation tooling. The daily

@@ -589,7 +589,104 @@ deliberately one country at a time, the first cohort is also the smallest and
 the least forgiving: Nigeria's numbers will be read closely, and they need to be
 trustworthy on day one rather than reconstructed in hindsight.
 
-## 12. What is already built
+## 12. The season
+
+Everything above is one round. A round is not a competition — it is a daily
+ritual. What turns it into a competition, and eventually into a finale, is the
+season, and the season needs a rule that decides who carries a country.
+
+### Twelve weeks, and why that number
+
+A season is **twelve weeks: eighty-four rounds.** The reason is structural
+rather than decorative. Every week contains all seven faculties exactly once, so
+a week compares like with like, and twelve of them is the shortest span that
+still feels like a campaign rather than a fortnight. It also lands four seasons
+a year, which is the right cadence for a broadcast schedule: one filmed finale
+per quarter, with the country-by-country roll-out happening between them.
+
+### The qualification rule
+
+**Your best 40 rounds of the 84, and you must play at least 24.**
+
+That sentence is the whole competitive design, and every number in it was
+chosen against one constraint: **connectivity.**
+
+- **Why not all 84?** Because most of the world does not have a reliable daily
+  connection, and the launch market certainly does not. Requiring perfect
+  attendance does not measure skill, it measures income — and it would exclude
+  precisely the players this game claims to exist for.
+- **Why not sum everything played?** Because that rewards grinding rather than
+  excellence, and makes one absent day a permanent penalty on an otherwise
+  strong season.
+- **Why not average everything played?** Because four lucky rounds then beat
+  eighty good ones. That is the "play once, score perfect" failure this project
+  already had to fix at the daily level, and it would be worse here: it would
+  hand the finale to whoever got lucky once and stopped.
+- **Why 40, and why 24?** 40 is just under half the season, so a player is
+  always choosing from a broad sample rather than a lucky few; the 41st-best
+  round is worth exactly nothing, which is what bounds the advantage of playing
+  more. 24 is under three rounds a week — clearable on a patchy connection,
+  and still a real commitment.
+
+There is an honest tension and it is not hidden: **a player who plays more
+rounds has more chances to fill their best 40.** A reliable connection is still
+an advantage in contention. It is bounded, and the floor is low enough that it
+does not decide *qualification* — but it does shade *ranking*, and it will keep
+doing so until mobile data is cheap in Lagos. Naming that is better than
+pretending the game is level when the infrastructure is not.
+
+### How nations qualify
+
+Two different things are being measured, and keeping them separate is the point:
+
+| | |
+|---|---|
+| **Who carries the flag** | the individual season winner |
+| **Which countries have depth** | nations ranked by the **median** of their qualifying players |
+
+Nations rank by median for exactly the reason the daily board does — population
+must not buy a place, and one prodigy must not make a country look strong. A
+country is only ranked once it has at least five qualifying players, and until
+then it is shown as unranked with the number it still needs. It is never given a
+rank it has not earned, and this is stated on the screen where the ranking lives.
+
+**The simulated demo world never competes.** It exists to keep the daily board
+from being a ghost town in countries where the game has not launched, and it is
+labelled everywhere it appears. Qualifying for a televised final by simulation
+would be absurd, so it is excluded structurally — not filtered at the last step,
+but skipped at the first.
+
+### Mid-season honesty
+
+Nobody is declared qualified in week one. The status a player sees is one of:
+
+- **on track** — above the floor, season still running
+- **qualified** — above the floor, season ended
+- **at risk** — below the floor, but enough rounds remain to reach it
+- **out** — below the floor, and not enough rounds remain
+
+`out` is the one that matters. A player who cannot qualify should be told, with
+the arithmetic — "you have 10 rounds, 23 is the floor, 4 rounds remain" — rather
+than left to discover it. A competition that quietly stops counting you is worse
+than one that says so.
+
+### What this makes possible
+
+With a season in place, four things that were previously promises become
+schedules:
+
+1. **National finals.** A country with a ranked season has a defined squad, so
+   a national final has actual qualifiers rather than a casting call.
+2. **The filmed finale.** "The top 40 by season score" is a rule a broadcaster
+   can put on a poster and a viewer can verify.
+3. **Curve recalibration.** The concept's scoring curves are literature-based
+   priors; the end of a season is when they can be refitted against what
+   humanity actually did — which is why the engine calls them V1.
+4. **The weekly cadence.** Seven rounds is a week and a week is a complete set
+   of faculties, so "this week's tower" is a small, frequent, verifiable
+   celebration between the big seasonal ones.
+
+## 13. What is already built
 
 This repository contains a **working prototype of the entire daily game**, not a
 mockup.
@@ -607,7 +704,7 @@ mockup.
 - One-scored-attempt-per-day enforced on the server
 - Offline play: the full game shell is cached, submissions queue and resync
 - Installable as a phone app (PWA), self-hosted fonts, no third-party trackers
-- A 64-check end-to-end test suite covering the API, every screen, every
+- A 74-check end-to-end test suite covering the API, every screen, every
   discipline, all seven scoring curves, every attempt to cheat the endpoint, and
   a fairness suite that deletes colour from 720 generated puzzles to prove the
   pattern round is solvable without colour vision
@@ -631,18 +728,23 @@ is a contained change behind a single function.
 
 ---
 
-## 13. The next ninety days
+## 14. The next ninety days
 
-| Weeks | Deliverable |
-|---|---|
-| 1–2 | Accounts (phone-number optional), season rollups, admin tooling |
-| 3–4 | ~~Accessibility pass: colour-independent cues, silent rhythm mode~~ — **done, see below**. Remaining: larger touch targets, keyboard-only paths |
-| 3–4 | ~~Retention instrumentation~~ — **done, see "What we measure"**. Now it needs a real cohort: launch Nigeria and read the day-1 rate |
-| 3–4 | ~~Accounts and moderation~~ — **done, see "The client does not choose who it is"**. Now a Lagos-only soft launch is defensible |
-| 5–6 | Hausa, Yoruba, Igbo and Nigerian Pidgin interfaces; then French, Arabic, Portuguese, Hindi, Bahasa |
-| 7–8 | Lagos pilot with three universities and two radio groups; instrument retention |
-| 9–10 | Curve re-fit from real pilot data; publish the first national norms |
-| 11–12 | Diaspora campaign and the first national final, filmed. Season 1 opens. |
+**Where the plan stands.** The engineering block is finished; what remains is
+reaching people. Accounts shipped **without** phone numbers — an identifier and
+a recovery key turned out to be sufficient, and asking for a phone number to
+play a game buys nothing the game needs.
+
+| Weeks | Deliverable | State |
+|---|---|---|
+| 1–2 | Accounts, season rollups, moderation tooling | **done** — see "The client does not choose who it is" and "The season" |
+| 1–4 | Accessibility: colour independence, a silent rhythm mode, read-aloud, per-discipline needs | **done** — see "Accessibility, stated plainly". Remaining: larger touch targets, keyboard-only paths |
+| 1–4 | Retention instrumentation | **done** — see "What we measure". It now needs a real cohort rather than a simulated one |
+| 1–4 | The season layer: twelve weeks, best 40 of 84, floor of 24, nations by median | **done** — Season 1 runs 2026-10-11 → 2027-01-02 |
+| 5–6 | Hausa, Yoruba, Igbo and Nigerian Pidgin interfaces; then French, Arabic, Portuguese, Hindi, Bahasa | **next** |
+| 7–8 | Lagos pilot with three universities and two radio groups | needs a host country launch decision |
+| 9–10 | Curve re-fit from real pilot data; publish the first national norms | needs the pilot |
+| 11–12 | Diaspora campaign and the first national final, filmed | needs a broadcaster |
 
 **What success looks like at 90 days:** 250,000 Nigerian players, a seven-day
 retention above 40%, published norms for seven disciplines, and a national final
@@ -650,7 +752,7 @@ with a broadcaster attached.
 
 ---
 
-## 14. Why now
+## 15. Why now
 
 Three things became true at roughly the same moment:
 

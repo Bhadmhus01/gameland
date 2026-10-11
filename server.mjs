@@ -34,6 +34,21 @@ import {
 } from "./public/js/engine.js";
 import { COUNTRIES, BY_ISO, nameOf } from "./public/js/countries.js";
 import { buildReport, prunePlayers, recordDeviceDay, normaliseAnalytics } from "./public/js/retention.js";
+import {
+  seasonInfo,
+  seasonByIndex,
+  seasonStatus,
+  collectSeasonEntries,
+  seasonStandings,
+  nationStandings,
+  towerFor,
+  weekTowerFor,
+  sameSeason,
+  QUALIFY_MIN,
+  COUNT_BEST,
+  SEASON_WEEKS,
+  SEASON_ROUNDS,
+} from "./public/js/season.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -271,6 +286,81 @@ function resolveAccount(item) {
   if (account.banned) return { banned: true, account };
   account.lastSeen = Date.now();
   return { account, fresh: false };
+}
+
+/* ------------------------------------------------------- season plumbing
+ *
+ * The season views need three things the rest of the server never did: how far
+ * into a season today is, every score an account has recorded this season, and
+ * where that account currently ranks.
+ */
+
+/** How many rounds of a season have been offered, and how many remain. */
+function roundOf(info, todayStr) {
+  const position = Math.max(0, Math.min(SEASON_ROUNDS - 1, dayIndexOf(todayStr) - dayIndexOf(info.start)));
+  return { elapsed: position + 1, remaining: SEASON_ROUNDS - (position + 1) };
+}
+
+/**
+ * Which account does this device belong to?
+ *
+ * Deliberately NOT a credential: a device id is guessable enough that treating
+ * it as one would repeat the mistake this whole lane exists to fix. It is used
+ * only to personalise a read, and every write still requires the token.
+ */
+function accountForDevice(deviceId) {
+  if (!deviceId) return null;
+  const all = accounts();
+  for (const id in all) {
+    if (all[id].deviceId === deviceId) return all[id];
+  }
+  return null;
+}
+
+/**
+ * Remember which device an account was issued to, first time only.
+ *
+ * Takes an ACCOUNT ID, not an account object — and that is not fussiness.
+ * createAccount() returns a copy carrying the plaintext token and code, which
+ * must never be written to the store. Mutating that copy wrote the device id
+ * into a throwaway object and silently dropped it: the account was created, the
+ * round was scored, and the link between them vanished. The lookup is the point.
+ */
+function bindDevice(accountId, deviceId) {
+  const id = String(deviceId || "").slice(0, 32);
+  if (!id || !/^[a-z0-9]{6,32}$/.test(id)) return;
+  const stored = accounts()[accountId];
+  if (!stored) return;
+  if (!stored.deviceId) stored.deviceId = id;
+}
+
+/** Every score this account recorded inside a season. */
+function entriesForAccount(accountId, info) {
+  const out = [];
+  for (const [roundId, round] of Object.entries(store.rounds)) {
+    if (!round || !round.date) continue;
+    if (!sameSeason(round.date, info.start)) continue;
+    const hit = (round.board || []).find((e) => e.accountId === accountId);
+    if (hit) out.push({ roundId, date: round.date, score: hit.score });
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
+}
+
+/** Where an account sits in the season table, if it is in it at all. */
+function rankForAccount(accountId, info) {
+  const collected = collectSeasonEntries(store.rounds, { season: info });
+  const table = seasonStandings(collected.players, { today: today(), season: info });
+  const row = table.standings.find((r) => r.accountId === accountId);
+  if (row) return { rank: row.rank, of: table.qualifiers, qualified: true };
+  const chasing = table.closestToQualifying.find((r) => r.accountId === accountId);
+  return {
+    rank: null,
+    of: table.qualifiers,
+    qualified: false,
+    roundsPlayed: chasing?.roundsPlayed ?? 0,
+    roundsNeeded: chasing?.roundsNeeded ?? QUALIFY_MIN,
+  };
 }
 
 /* --------------------------------------------------------------- name rules
@@ -940,6 +1030,83 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true, results });
   }
 
+  /* --- the season ------------------------------------------------------
+   * The long game. A season is 12 weeks (84 rounds) and, because the rotation
+   * puts all seven faculties in every week, every player who plays a week has
+   * faced the identical seven challenges. Ranking a season is therefore fair in
+   * a way that ranking a leaderboard of individual rounds is not.
+   */
+  if (p === "/api/season" && req.method === "GET") {
+    const dateStr = readDate(q.get("date"));
+    if (!dateStr) return sendJson(res, 400, { error: "bad_date" });
+    const todayStr = today();
+
+    // Which season? The one containing the requested date, by default.
+    const wanted = q.get("season");
+    const info =
+      wanted && /^s\d{3,}$/.test(wanted)
+        ? seasonByIndex(parseInt(wanted.slice(1), 10) - 1)
+        : seasonInfo(dateStr);
+
+    const collected = collectSeasonEntries(store.rounds, { season: info });
+    const table = seasonStandings(collected.players, { today: todayStr, season: info });
+    const nations = nationStandings(collected.players, { today: todayStr, season: info });
+
+    return sendJson(res, 200, {
+      season: {
+        ...info,
+        status: seasonStatus(info, todayStr),
+        roundsElapsed: roundOf(info, todayStr).elapsed,
+        roundsRemaining: roundOf(info, todayStr).remaining,
+      },
+      rules: {
+        qualifyMin: QUALIFY_MIN,
+        countBest: COUNT_BEST,
+        totalRounds: SEASON_ROUNDS,
+        totalWeeks: SEASON_WEEKS,
+        // Said in the payload, because the shape of this rule is the whole
+        // argument for the season being a fair competition.
+        why: "Your best 40 rounds of 84. Bad days and missed days are forgiven; you still have to show up for at least 24.",
+      },
+      players: collected.playersCount,
+      roundsPlayed: collected.rounds.length,
+      standings: table.standings,
+      qualifiers: table.qualifiers,
+      chasing: table.closestToQualifying,
+      nations: nations.ranked,
+      unrankedNations: nations.unranked,
+      minQualifiers: nations.minQualifiers,
+    });
+  }
+
+  /* --- one tower, across the season ------------------------------------- */
+  if (p === "/api/tower" && req.method === "GET") {
+    const deviceId = String(q.get("deviceId") || "").slice(0, 32);
+    if (!deviceId) return sendJson(res, 400, { error: "bad_device" });
+
+    // The client sends its device id, which is not a credential — it is only
+    // used to look up the device's account, never to authorise anything.
+    const account = accountForDevice(deviceId);
+    if (!account) {
+      return sendJson(res, 200, { hasAccount: false, season: seasonInfo(today()) });
+    }
+
+    const info = seasonInfo(today());
+    const entries = entriesForAccount(account.id, info);
+    const tower = towerFor(entries, { today: today(), season: info });
+    const week = weekTowerFor(entries, today());
+    const rank = rankForAccount(account.id, info);
+
+    return sendJson(res, 200, {
+      hasAccount: true,
+      season: { ...info, status: seasonStatus(info, today()) },
+      tower,
+      week,
+      rank,
+      rules: { qualifyMin: QUALIFY_MIN, countBest: COUNT_BEST },
+    });
+  }
+
   /* --- a nation's story across rounds --------------------------------- */
   if (p === "/api/country" && req.method === "GET") {
     const iso = (q.get("country") || "").toUpperCase();
@@ -1187,6 +1354,8 @@ function recordSubmission(item) {
   } else {
     score = scoreRound(discipline.id, parsed.raw);
   }
+
+  if (id.fresh) bindDevice(account.id, item.deviceId);
 
   r.board.push({ pseudo, iso, score, ts: Date.now(), key, accountId: account.id });
   r.board.sort((a, b) => b.score - a.score);

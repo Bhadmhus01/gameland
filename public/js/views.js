@@ -350,6 +350,9 @@ export function viewToday(app) {
         // a new account; a wrong token is refused rather than quietly becoming
         // one, which is what stops it buying a second attempt.
         token: store.account.token || undefined,
+        // So the server can show this device its own tower on the season view.
+        // Not a credential: it personalises a read and authorises nothing.
+        deviceId: identity.deviceId,
       });
       // A first score is when the server issues an account. Keep it, and show
       // the recovery code once, while the player is looking at the screen.
@@ -1440,6 +1443,282 @@ function accountCard(app) {
   };
   paint();
   return card;
+}
+
+/**
+ * The season: twelve weeks, eighty-four rounds, and a rule that decides who
+ * carries a country into the finale.
+ *
+ * The rule is displayed next to the table it produces, in the same words. A
+ * competition whose qualifying rule is buried is a competition people suspect,
+ * and this game's entire proposition is that the contest is real.
+ */
+export function viewSeason(app) {
+  const root = h("div", { class: "stack" });
+  const data = app.state.season;
+
+  if (!data) {
+    root.append(h("div", { class: "card center" }, h("div", { class: "spinner", style: { margin: "0 auto" } })));
+    return root;
+  }
+
+  const { season, rules } = data;
+  const progress = Math.round((season.roundsElapsed / season.totalRounds) * 100);
+
+  root.append(
+    h(
+      "div",
+      { class: "card" },
+      h("div", { class: "eyebrow", text: `Season ${season.number}` }),
+      h("h1", { text: "Twelve weeks. One tower each." }),
+      h("p", {
+        class: "lede",
+        style: { marginTop: "12px" },
+        text:
+          `Round ${season.roundsElapsed} of ${season.totalRounds} · week ${Math.min(
+            season.weekInSeason,
+            season.totalWeeks
+          )} of ${season.totalWeeks}. Every week contains all seven faculties exactly once, so ` +
+          `anyone who plays a full week has faced the identical seven challenges as everyone else on Earth.`,
+      }),
+      h(
+        "div",
+        { class: "meter", style: { marginTop: "16px" } },
+        h("i", { style: { width: `${progress}%` } })
+      ),
+      h("div", {
+        class: "tiny",
+        style: { marginTop: "6px", color: "#8b98c6" },
+        text: `${season.start} → ${season.end} · ${season.roundsRemaining} rounds still to come`,
+      })
+    )
+  );
+
+  /* ---- the rule, where the ranking is ---- */
+  root.append(
+    h(
+      "div",
+      { class: "card" },
+      h("div", { class: "eyebrow", text: "How a season is won" }),
+      h("h3", { text: `Your best ${rules.countBest} rounds of ${rules.totalRounds}` }),
+      h("p", { class: "small muted", style: { marginTop: "10px" }, text: rules.why }),
+      h(
+        "div",
+        { class: "row wraprow", style: { gap: "8px", marginTop: "12px" } },
+        h("span", { class: "pill gold", text: `qualify: ${rules.qualifyMin}+ rounds` }),
+        h("span", { class: "pill", text: `counting: best ${rules.countBest}` }),
+        h("span", { class: "pill green", text: "missed days forgiven" })
+      ),
+      h("p", {
+        class: "tiny",
+        style: { marginTop: "12px", color: "#8b98c6" },
+        text:
+          "Chosen against connectivity, not convenience: requiring all 84 rounds would exclude anyone " +
+          "whose phone, power or data fails on a given day — which is a measure of income, not of skill. " +
+          "A player with more rounds does have more chances to fill their best 40, so we say so plainly: " +
+          "the edge is real, it is bounded, and the floor is low enough to qualify on a patchy connection.",
+      })
+    )
+  );
+
+  /* ---- your own tower ----
+   * Read from its own endpoint: the season table is public and identical for
+   * everyone, whereas a tower belongs to one account.
+   */
+  const me = app.state.tower;
+  const tower = me && me.hasAccount ? me.tower : null;
+  if (tower) {
+    const need = Math.max(0, rules.qualifyMin - tower.roundsPlayed);
+    const statusText =
+      tower.status === "qualified"
+        ? "Qualified for the finale draw"
+        : tower.status === "on_track"
+          ? "On track to qualify"
+          : tower.status === "at_risk"
+            ? `${need} more round${need === 1 ? "" : "s"} to qualify`
+            : "No longer able to qualify this season";
+    const statusClass =
+      tower.status === "qualified" || tower.status === "on_track"
+        ? "green"
+        : tower.status === "at_risk"
+          ? "gold"
+          : "coral";
+
+    root.append(
+      h(
+        "div",
+        { class: "card" },
+        h("div", { class: "eyebrow", text: "Your tower" }),
+        h("div", { class: "spread", style: { marginTop: "8px" } },
+          h("h3", { text: store.identity.pseudo || "Unnamed player" }),
+          h("span", { class: `pill ${statusClass}`, text: statusText })),
+        h("div", { class: "reveal-score", style: { fontSize: "clamp(34px,10vw,54px)" }, text: String(tower.total) }),
+        h("div", { class: "tiny-up muted", text: `from your best ${tower.roundsCounted} rounds` }),
+        h(
+          "div",
+          { class: "grid-2", style: { marginTop: "16px" } },
+          h("div", { class: "stat" }, h("b", { text: String(tower.roundsPlayed) }), h("span", { text: "Rounds played" })),
+          h("div", { class: "stat" }, h("b", { text: tower.best === null ? "—" : String(tower.best) }), h("span", { text: "Best round" })),
+          h("div", { class: "stat" }, h("b", { text: tower.floor === null ? "—" : String(tower.floor) }), h("span", { text: "Weakest counted" })),
+          h("div", { class: "stat" },
+            h("b", { text: me.rank?.rank ? `#${me.rank.rank}` : "—" }),
+            h("span", { text: me.rank?.rank ? `of ${me.rank.of} qualifiers` : "not yet ranked" }))
+        ),
+        tower.roundsPlayed < rules.qualifyMin
+          ? h("p", {
+              class: "small muted",
+              style: { marginTop: "14px" },
+              text: canStill(tower)
+                ? `You need ${need} more round${need === 1 ? "" : "s"} by ${season.end} to be counted. ${tower.roundsRemaining} left.`
+                : `The season ends ${season.end} and you are ${need} round${need === 1 ? "" : "s"} short. Your tower carries forward as a record, but it cannot qualify.`,
+            })
+          : null
+      )
+    );
+  }
+
+  if (!tower) {
+    root.append(
+      h(
+        "div",
+        { class: "card" },
+        h("div", { class: "eyebrow", text: "Your tower" }),
+        h("h3", { text: "Not started yet" }),
+        h("p", { class: "small muted", style: { marginTop: "8px" },
+          text: "Play one round and this becomes your season record — every score you set, and how far you are from being counted." }),
+        h("button", {
+          class: "btn btn-primary small",
+          style: { marginTop: "12px" },
+          text: "Play today's round",
+          onclick: () => app.go("today"),
+        })
+      )
+    );
+  }
+
+  /* ---- the world table ---- */
+  root.append(
+    h(
+      "div",
+      { class: "card" },
+      h("div", { class: "spread" },
+        h("h3", { text: "The world, this season" }),
+        h("span", { class: "pill gold", text: `${data.qualifiers} qualified` })),
+      h("div", { style: { height: "12px" } }),
+      data.standings.length
+        ? h(
+            "div",
+            { class: "scroll-y" },
+            h(
+              "table",
+              { class: "table" },
+              h("thead", {}, h("tr", {},
+                h("th", { text: "#" }),
+                h("th", { text: "Player" }),
+                h("th", { class: "num", text: "Season" }),
+                h("th", { class: "num", text: "Rounds" }))),
+              h(
+                "tbody",
+                {},
+                data.standings.slice(0, 40).map((r) =>
+                  h(
+                    "tr",
+                    { class: isMe(r) ? "me" : "" },
+                    h("td", { class: "rank", text: String(r.rank) }),
+                    h("td", {},
+                      h("span", { class: "flag", text: flag(r.iso) }),
+                      " ",
+                      h("b", { text: r.pseudo })),
+                    h("td", { class: "num", text: String(r.total) }),
+                    h("td", { class: "num muted", text: `${r.roundsCounted}/${r.roundsPlayed}` })
+                  )
+                )
+              )
+            )
+          )
+        : h("p", {
+            class: "small muted",
+            text: "Nobody has played enough rounds to qualify yet. The first qualifiers appear once a player reaches the floor — which is deliberately set at rounds, not at a shortcut.",
+          })
+    )
+  );
+
+  /* ---- nations ---- */
+  root.append(
+    h(
+      "div",
+      { class: "card" },
+      h("div", { class: "eyebrow", text: "Finals" }),
+      h("h3", { text: "Which countries are building a squad" }),
+      h("p", {
+        class: "small muted",
+        style: { marginTop: "8px" },
+        text:
+          `Nations rank by the median of their qualifying players, so population cannot buy a place and one ` +
+          `prodigy cannot carry a country. A nation needs ${data.minQualifiers} qualifiers before it is ranked at all.`,
+      }),
+      h(
+        "div",
+        { class: "stack", style: { gap: "10px", marginTop: "14px" } },
+        (data.nations || []).slice(0, 12).map((n) =>
+          h(
+            "div",
+            { class: "faculty-row" },
+            h("span", { class: "rank", style: { width: "28px" }, text: String(n.rank) }),
+            h("span", { class: "flag", text: flag(n.iso) }),
+            h("b", { style: { flex: 1, marginLeft: "8px" }, text: nameOf(n.iso) }),
+            h("span", { class: "pill", text: `${n.qualifiers} qualified` }),
+            h("b", { style: { marginLeft: "10px", fontFamily: "Anton, sans-serif" }, text: String(n.median) })
+          )
+        ),
+        (data.unrankedNations || []).length
+          ? h("p", {
+              class: "tiny",
+              style: { marginTop: "10px", color: "#8b98c6" },
+              text:
+                "Not yet ranked: " +
+                data.unrankedNations
+                  .slice(0, 8)
+                  .map((n) => `${nameOf(n.iso)} needs ${n.needed} more`)
+                  .join(" · "),
+            })
+          : null
+      )
+    )
+  );
+
+  /* ---- the queue ---- */
+  if ((data.chasing || []).length) {
+    root.append(
+      h(
+        "div",
+        { class: "card" },
+        h("h3", { text: "Closest to qualifying" }),
+        h("p", { class: "small muted", style: { marginTop: "8px" },
+          text: "Below the floor you are not ranked last — you are simply not ranked. These are the players closest to being counted." }),
+        h(
+          "div",
+          { class: "stack", style: { gap: "8px", marginTop: "12px" } },
+          data.chasing.slice(0, 10).map((c) =>
+            h(
+              "div",
+              { class: "faculty-row" },
+              h("span", { class: "flag", text: flag(c.iso) }),
+              h("b", { style: { flex: 1, marginLeft: "8px" }, text: c.pseudo }),
+              h("span", { class: "pill gold", text: `${c.roundsPlayed} played` }),
+              h("span", { class: "pill", text: `${c.roundsNeeded} to go` })
+            )
+          )
+        )
+      )
+    );
+  }
+
+  return root;
+}
+
+function canStill(tower) {
+  return tower.canStillQualify;
 }
 
 export function viewCareer(app) {

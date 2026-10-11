@@ -14,6 +14,7 @@ import {
   viewBoard,
   viewNigeria,
   viewRules,
+  viewSeason,
   viewCareer,
   openIdentitySheet,
   liveCountdown,
@@ -22,6 +23,7 @@ import {
 const TABS = [
   ["today", "Today"],
   ["board", "The World"],
+  ["season", "Season"],
   ["nigeria", "Nigeria"],
   ["rules", "Fair Play"],
   ["career", "My Tower"],
@@ -48,6 +50,8 @@ const app = {
     board: null,
     boardPlayers: null,
     myResult: null,
+    season: null,
+    tower: null,
     nigeria: null,
     nigeriaSelf: null,
     boardScope: "world",
@@ -117,6 +121,7 @@ function renderTabs() {
 const VIEWS = {
   today: viewToday,
   board: viewBoard,
+  season: viewSeason,
   nigeria: viewNigeria,
   rules: viewRules,
   career: viewCareer,
@@ -145,10 +150,24 @@ function render() {
 async function loadAll(opts = {}) {
   if (app.state.date) app.state.myResult = store.todayResult(app.state.date);
   try {
-    const [round, board] = await Promise.all([
+    const [round, board, season] = await Promise.all([
       api.today(app.state.date || undefined, store.identity.deviceId),
       api.leaderboard(app.state.date || undefined, "world"),
+      api.season(app.state.date || undefined),
     ]);
+    app.state.season = season;
+
+    // The player's own tower, only once this device has an account. A failure
+    // here must never take the season table down with it, so it is separate.
+    if (store.hasAccount) {
+      try {
+        app.state.tower = await api.tower(store.identity.deviceId);
+      } catch {
+        app.state.tower = null;
+      }
+    } else {
+      app.state.tower = null;
+    }
     // Adopt the server's notion of the current round, so a pinned preview day
     // and the normal daily path behave identically from here on.
     app.state.date = round.date;

@@ -62,6 +62,16 @@ export const api = {
   country(iso) {
     return jget("/api/country", { country: iso });
   },
+  season(date) {
+    return jget("/api/season", { date });
+  },
+  /**
+   * Your own tower for the season. Identified by device id, which is NOT a
+   * credential — it personalises a read and authorises nothing.
+   */
+  tower(deviceId, date) {
+    return jget("/api/tower", { deviceId, date });
+  },
 
   async submit(payload) {
     try {

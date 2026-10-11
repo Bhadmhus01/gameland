@@ -93,7 +93,7 @@ await step("GET /api/country?country=NG", async () => {
 
 /* 2. Every module imports cleanly. */
 console.log("\nmodules");
-let engine, countries, ui, store, api, games, views, retention, analytics;
+let engine, countries, ui, store, api, games, views, retention, analytics, season;
 await step("import engine / countries / ui / store / api / games / views", async () => {
   engine = await import("../public/js/engine.js");
   countries = await import("../public/js/countries.js");
@@ -103,6 +103,7 @@ await step("import engine / countries / ui / store / api / games / views", async
   games = await import("../public/js/games.js");
   views = await import("../public/js/views.js");
   retention = await import("../public/js/retention.js");
+  season = await import("../public/js/season.js");
   analytics = await import("../public/js/analytics.js");
   return `${engine.DISCIPLINES.length} disciplines · ${countries.COUNTRIES.length} countries`;
 });
@@ -1471,7 +1472,272 @@ await step("a lost phone is recovered with the key, not with the device", async 
   return `same account ${id} · same score ${after.score} · wrong key refused`;
 });
 
-/* 14. Boot the whole application exactly as a browser would. */
+/* 14. The season.
+ *
+ * The long game, and the rule that decides who carries a country into the
+ * finale. Built on the one structural guarantee the rotation gives us: every
+ * week is exactly one of each faculty, so a week compares like with like.
+ *
+ * The maths is pinned to a fixture whose answer is known by hand. A qualifying
+ * rule that cannot be checked by hand is a rule nobody should trust.
+ */
+
+/** Build a season's worth of rounds with one score per player per day. */
+function fixture(rows) {
+  const start = season.seasonByIndex(0).start;
+  const rounds = {};
+  for (const [accountId, pseudo, iso, plan] of rows) {
+    for (const [day, score] of plan) {
+      const rid = "rF" + String(day).padStart(4, "0");
+      rounds[rid] = rounds[rid] || { date: season.addDays(start, day), board: [] };
+      rounds[rid].board.push({ accountId, pseudo, iso, score });
+    }
+  }
+  return rounds;
+}
+
+const range = (from, to, score) => {
+  const out = [];
+  for (let d = from; d <= to; d++) out.push([d, score]);
+  return out;
+};
+
+await step("the season score is the best 40 of 84, checked by hand", async () => {
+  const rounds = fixture([
+    ["a", "Steady_A", "NG", range(0, 83, 600)],          // 84 rounds at 600
+    ["b", "Spiky_B", "GH", [...range(0, 43, 1000), ...range(44, 83, 0)]], // 44 perfect, 40 zero
+    ["d", "Solid_D", "ZA", range(0, 39, 900)],           // 40 rounds at 900
+  ]);
+  const info = season.seasonByIndex(0);
+  const got = season.collectSeasonEntries(rounds, { season: info });
+  const table = season.seasonStandings(got.players, { today: season.addDays(info.start, 83), season: info });
+
+  const byName = Object.fromEntries(table.standings.map((r) => [r.pseudo, r]));
+  if (byName.Spiky_B.total !== 40000) throw new Error(`Spiky_B ${byName.Spiky_B.total}, expected 40 × 1000`);
+  if (byName.Solid_D.total !== 36000) throw new Error(`Solid_D ${byName.Solid_D.total}, expected 40 × 900`);
+  // 84 × 600 = 50400 if it summed everything. The cap is the point.
+  if (byName.Steady_A.total !== 24000) throw new Error(`Steady_A ${byName.Steady_A.total}, expected 40 × 600`);
+  if (byName.Steady_A.roundsPlayed !== 84) throw new Error("rounds played was not counted in full");
+  if (byName.Steady_A.roundsCounted !== 40) throw new Error(`counted ${byName.Steady_A.roundsCounted}`);
+
+  const order = table.standings.map((r) => r.pseudo).join(" > ");
+  if (order !== "Spiky_B > Solid_D > Steady_A") throw new Error(`wrong order: ${order}`);
+  return `Spiky_B 40000 > Solid_D 36000 > Steady_A 24000 (from 84 rounds of 600)`;
+});
+
+await step("the floor stops a drive-by from qualifying", async () => {
+  // The anti-gaming property of the whole rule: a handful of perfect rounds
+  // must not be able to out-rank a season of real play.
+  const rounds = fixture([
+    ["c", "Drive_By", "KE", range(0, 22, 1000)],  // 23 perfect rounds — one short
+    ["d", "Solid_D", "ZA", range(0, 39, 900)],    // 40 rounds at 900
+  ]);
+  const info = season.seasonByIndex(0);
+  const got = season.collectSeasonEntries(rounds, { season: info });
+  const table = season.seasonStandings(got.players, { today: season.addDays(info.start, 83), season: info });
+
+  if (table.standings.some((r) => r.pseudo === "Drive_By")) {
+    throw new Error("a player below the floor was ranked anyway");
+  }
+  if (table.qualifiers !== 1) throw new Error(`expected 1 qualifier, got ${table.qualifiers}`);
+  const chasing = table.closestToQualifying.find((c) => c.pseudo === "Drive_By");
+  if (!chasing) throw new Error("a near-miss player was not reported as chasing");
+  if (chasing.roundsNeeded !== 1) throw new Error(`needs ${chasing.roundsNeeded}, expected 1`);
+
+  // Sanity: their raw average was perfect, and it still did not count. This is
+  // the "play once, score perfect" failure the daily board already had to fix.
+  if (chasing.average !== 1000) throw new Error("fixture is wrong: average should be 1000");
+  return `23 perfect rounds ranked nowhere · 1 round short · average 1000 discarded`;
+});
+
+await step("a player who cannot reach the floor is told, not just dropped", async () => {
+  const info = season.seasonByIndex(0);
+  // 10 rounds played, today is round 80 of 84: 10 + 4 remaining < 24.
+  const entries = range(0, 9, 800).map(([d, score]) => ({
+    roundId: "rF" + String(d).padStart(4, "0"),
+    date: season.addDays(info.start, d),
+    score,
+  }));
+  const tower = season.towerFor(entries, { today: season.addDays(info.start, 79), season: info });
+  if (tower.status !== "out") throw new Error(`status ${tower.status}, expected out`);
+  if (tower.canStillQualify) throw new Error("claimed a player could still qualify with too few rounds left");
+  if (tower.roundsRemaining !== 4) throw new Error(`roundsRemaining ${tower.roundsRemaining}, expected 4`);
+  if (tower.roundsNeeded !== 14) throw new Error(`roundsNeeded ${tower.roundsNeeded}, expected 14`);
+
+  // And at the end of a completed season, qualifying reads as qualified.
+  const done = season.towerFor(entries, { today: season.addDays(info.end, 1), season: info });
+  if (done.status !== "out") throw new Error(`after the season ended: ${done.status}`);
+  const full = season.towerFor(
+    range(0, 29, 700).map(([d, score]) => ({ roundId: "rF" + String(d).padStart(4, "0"), date: season.addDays(info.start, d), score })),
+    { today: season.addDays(info.end, 1), season: info }
+  );
+  if (full.status !== "qualified") throw new Error(`30 rounds at season's end read as ${full.status}`);
+  return "out when unreachable · qualified once the season has ended";
+});
+
+await step("equal totals are separated by consistency, deterministically", async () => {
+  // Same season total, different shapes. The steadier player ranks higher, and
+  // repeating the calculation gives the same answer — a table that reshuffles
+  // between reads is a table nobody can plan around.
+  const rounds = fixture([
+    ["x", "Lumpy_X", "NG", [...range(0, 11, 1000), ...range(12, 23, 400)]], // 12000 + 4800
+    ["y", "Even_Y", "NG", range(0, 23, 700)],                               // 24 × 700 = 16800
+  ]);
+  const info = season.seasonByIndex(0);
+  const got = season.collectSeasonEntries(rounds, { season: info });
+  const today = season.addDays(info.start, 40);
+  const a = season.seasonStandings(got.players, { today, season: info });
+  const b = season.seasonStandings(got.players, { today, season: info });
+
+  const rowsA = a.standings.map((r) => `${r.pseudo}:${r.total}:${r.floor}`).join(" | ");
+  const rowsB = b.standings.map((r) => `${r.pseudo}:${r.total}:${r.floor}`).join(" | ");
+  if (rowsA !== rowsB) throw new Error("the table changed between two identical reads");
+  if (a.standings[0].total !== a.standings[1].total) throw new Error("fixture is wrong: totals should tie");
+  if (a.standings[0].pseudo !== "Even_Y") throw new Error(`tie broken wrongly: ${rowsA}`);
+  return `tied at ${a.standings[0].total} · floor ${a.standings[0].floor} beats ${a.standings[1].floor} · stable across reads`;
+});
+
+await step("the demo world never competes", async () => {
+  // Demo players keep the daily board alive where the game has not launched.
+  // They must never appear in a qualification table, or the finale would be
+  // decided by a simulation.
+  const info = season.seasonByIndex(0);
+  const rounds = {
+    rF0000: {
+      date: info.start,
+      board: [
+        { accountId: "real1", pseudo: "Real_One", iso: "NG", score: 700 },
+        { accountId: "demo1", pseudo: "Demo_One", iso: "US", score: 1000, demo: true },
+      ],
+    },
+  };
+  const got = season.collectSeasonEntries(rounds, { season: info });
+  if (got.playersCount !== 1) throw new Error(`collected ${got.playersCount} players, expected only the human`);
+  if (got.players.demo1) throw new Error("a demo player was collected into the season");
+  if (!got.players.real1) throw new Error("the real player was dropped");
+
+  // Entries written before accounts existed cannot be attributed, so they are
+  // skipped rather than guessed at.
+  const orphan = season.collectSeasonEntries(
+    { rF0000: { date: info.start, board: [{ pseudo: "Pre_Accounts", iso: "NG", score: 600 }] } },
+    { season: info }
+  );
+  if (orphan.playersCount !== 0) throw new Error("an entry with no account was attributed to somebody");
+  return "demo excluded · unattributable entries skipped";
+});
+
+await step("nations rank by median, and are not ranked until they have depth", async () => {
+  const rows = [];
+  // One country with a single brilliant player must not outrank a country with
+  // a solid squad — that is the whole reason for ranking by median.
+  for (let i = 0; i < 6; i++) rows.push([`ng${i}`, `Ng_${i}`, "NG", range(0, 29, 800)]);
+  rows.push(["ke0", "Ke_Star", "KE", range(0, 29, 1000)]);
+  const rounds = fixture(rows);
+  const info = season.seasonByIndex(0);
+  const got = season.collectSeasonEntries(rounds, { season: info });
+  const today = season.addDays(info.start, 40);
+
+  const n = season.nationStandings(got.players, { today, season: info, minQualifiers: 5 });
+  const ranked = n.ranked.map((r) => `${r.iso}:${r.median}`).join(" ");
+  if (n.ranked.length !== 1) throw new Error(`expected exactly 1 ranked nation, got ${ranked}`);
+  if (n.ranked[0].iso !== "NG") throw new Error(`ranked ${n.ranked[0].iso}`);
+  if (n.ranked[0].median !== 24000) throw new Error(`NG median ${n.ranked[0].median}, expected 24000`);
+  // Kenya has one qualifier and far fewer than the minimum, so it is unranked
+  // with a plain statement of what it needs — never a rank it has not earned.
+  const ke = n.unranked.find((r) => r.iso === "KE");
+  if (!ke) throw new Error("Kenya was neither ranked nor reported as unranked");
+  if (ke.needed !== 4) throw new Error(`Kenya needs ${ke.needed} more, expected 4`);
+  return `NG median 24000 ranked · KE with 1 qualifier unranked, needs 4`;
+});
+
+await step("season boundaries land where they are supposed to", async () => {
+  const s1 = season.seasonByIndex(0);
+  const s2 = season.seasonByIndex(1);
+  if (s1.start !== "2026-10-11") throw new Error(`season 1 starts ${s1.start}`);
+  if (s1.end !== "2027-01-02") throw new Error(`season 1 ends ${s1.end}`);
+  if (s2.start !== "2027-01-03") throw new Error(`season 2 starts ${s2.start}`);
+  if (season.seasonIndex(s1.end) !== 0) throw new Error("the last day of season 1 is not in season 1");
+  if (season.seasonIndex(s2.start) !== 1) throw new Error("the first day of season 2 is not in season 2");
+  if (season.seasonStatus(s1, s1.end) !== "running") throw new Error("season 1 ended a day early");
+  if (season.seasonStatus(s1, s2.start) !== "complete") throw new Error("season 1 never completes");
+  if (season.seasonStatus(s2, s1.start) !== "upcoming") throw new Error("season 2 was not marked upcoming");
+  if (season.SEASON_ROUNDS !== 84 || season.SEASON_WEEKS !== 12) throw new Error("season is not 12 weeks of 7");
+  return "s001 2026-10-11 → 2027-01-02 · s002 opens 2027-01-03 · statuses correct";
+});
+
+await step("a week is one complete set of the faculties", async () => {
+  // The property the season rests on: if a week held seven rounds of the same
+  // faculty, comparing players by a week would compare nothing meaningful.
+  const start = season.seasonByIndex(0).start;
+  const week1 = [];
+  for (let d = 0; d < 7; d++) week1.push(engine.disciplineForDate(season.addDays(start, d)).id);
+  if (new Set(week1).size !== 7) throw new Error(`week 1 repeats a faculty: ${week1.join(",")}`);
+  const week2 = [];
+  for (let d = 7; d < 14; d++) week2.push(engine.disciplineForDate(season.addDays(start, d)).id);
+  if (new Set(week2).size !== 7) throw new Error(`week 2 repeats a faculty: ${week2.join(",")}`);
+
+  const week = season.weekTowerFor(
+    range(0, 4, 600).map(([d, score]) => ({
+      roundId: "rF" + String(d).padStart(4, "0"),
+      date: season.addDays(start, d),
+      score,
+    })),
+    start
+  );
+  if (week.roundsPlayed !== 5) throw new Error(`week tower counted ${week.roundsPlayed} rounds`);
+  if (week.total !== 3000) throw new Error(`week total ${week.total}`);
+  if (week.complete) throw new Error("a 5-round week reported itself complete");
+  return `both weeks hold all 7 faculties · a partial week reads as partial`;
+});
+
+await step("the season endpoints answer, and refuse bad input", async () => {
+  const live = await fetch(`${BASE}/api/season`).then((r) => r.json());
+  if (!live.season?.id) throw new Error("no season in the payload");
+  if (live.rules.qualifyMin !== 24 || live.rules.countBest !== 40) {
+    throw new Error("the rules are not published in the payload they govern");
+  }
+  if (!live.rules.why) throw new Error("the rule is not explained where it is applied");
+  if (live.season.roundsElapsed < 1 || live.season.roundsElapsed > 84) throw new Error("rounds elapsed is nonsense");
+  if (live.season.status !== "running") throw new Error(`status ${live.season.status}`);
+
+  const bad = await fetch(`${BASE}/api/season?date=2031-01-01`);
+  if (bad.status !== 400) throw new Error(`a far-future date returned ${bad.status}`);
+
+  // A device that has never played is told so, not given an empty tower.
+  const none = await fetch(`${BASE}/api/tower?deviceId=nosuchdevice99`).then((r) => r.json());
+  if (none.hasAccount !== false) throw new Error("an unknown device was given a tower");
+  const missing = await fetch(`${BASE}/api/tower`);
+  if (missing.status !== 400) throw new Error(`no device id returned ${missing.status}`);
+
+  return `${live.season.id} round ${live.season.roundsElapsed}/${live.season.totalRounds} · rules published · bad input refused`;
+});
+
+await step("your tower follows your device, and only your device", async () => {
+  const device = "smoketower" + RUN.toLowerCase();
+  const played = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: "TowerSeason_" + RUN,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+    deviceId: device,
+  });
+  if (!played.ok) throw new Error(`could not play: ${JSON.stringify(played)}`);
+
+  const mine = await fetch(`${BASE}/api/tower?deviceId=${device}`).then((r) => r.json());
+  if (!mine.hasAccount) throw new Error("the device that just played has no tower");
+  if (mine.tower.roundsPlayed !== 1) throw new Error(`roundsPlayed ${mine.tower.roundsPlayed}`);
+  if (mine.tower.total !== played.score) throw new Error("the tower does not hold the score just set");
+  if (mine.tower.status !== "at_risk") throw new Error(`status ${mine.tower.status} for one round of a running season`);
+  if (mine.week.roundsPlayed !== 1) throw new Error("the week tower did not record the round");
+
+  // A different device sees nothing of it.
+  const other = await fetch(`${BASE}/api/tower?deviceId=someoneelse${RUN}`.toLowerCase()).then((r) => r.json());
+  if (other.hasAccount) throw new Error("another device was shown somebody else's tower");
+  return `one round held · ${mine.tower.roundsNeeded} rounds from the floor · a different device sees nothing`;
+});
+
+/* 15. Boot the whole application exactly as a browser would. */
 console.log("\napp boot (full client, live server)");
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1483,7 +1749,12 @@ await step("main.js boots the shell, loads the round and renders Today", async (
   if (!body.querySelector(".topbar")) throw new Error("no top bar");
   if (!body.querySelector(".tabs")) throw new Error("no tab bar");
   const tabs = [...body.querySelectorAll(".tab")];
-  if (tabs.length !== 5) throw new Error(`expected 5 screens, got ${tabs.length}`);
+  // Today · The World · Season · Nigeria · Fair Play · My Tower
+  if (tabs.length !== 6) throw new Error(`expected 6 screens, got ${tabs.length}`);
+  const labels = tabs.map((b) => b.textContent);
+  for (const want of ["Today", "The World", "Season", "Nigeria", "Fair Play", "My Tower"]) {
+    if (!labels.includes(want)) throw new Error(`the ${want} tab is missing: ${labels.join(", ")}`);
+  }
   const text = body.textContent;
   if (!text.includes("Today's faculty")) throw new Error("round did not load from the server");
   if (!text.includes(round.discipline.name)) throw new Error("discipline not shown");
