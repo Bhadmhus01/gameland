@@ -295,17 +295,38 @@ contest is real, there is no audience and no sponsor.
     or touch; the seventh can be listened to. Each one declares what it demands
     of a player's body, in the app, so the claim can be checked.
 
-### The round decides the task, not the player
+### The client does not choose the task, or the day
 
-One further hole was found while testing the above, and closed: the submission
-endpoint checked that the named discipline *existed* but not that it was
-**today's** discipline. A player on a social-intuition day could therefore post
-a perfect timing result — scored honestly by the server — and take rank 1 on a
-task the world was never given. Every discipline has a different curve, so
-without that check the ceiling was one crafted request away. The endpoint now
-refuses any result whose discipline is not the round's, and the regression test
-is run against four different days of the rotation so it cannot be satisfied by
-accident on one of them.
+Three further holes were found by auditing what the server believes from a
+client. All three are closed.
+
+**The named discipline was not checked against the round.** On a
+social-intuition day a player could post a perfect timing result — scored
+honestly by the server, from a real curve — and take rank 1 on a task the world
+was never given. Every discipline has its own curve, so without that check the
+ceiling was one crafted request away. The endpoint now refuses any result whose
+discipline is not the round's.
+
+**The client chose the date.** A result could be submitted for any day at all,
+including days that had not happened. Probe a future round with throwaway
+pseudonyms, keep the best, submit it under your real name, and a perfect score
+is seeded weeks in advance. The server decides the day now, with one honest
+exception: UTC midnight is arbitrary for most of the world, so a player who
+starts at 23:58 and finishes at 00:01 can still submit for the round they
+actually played, for two hours after midnight and no longer.
+
+**The data store was being served over HTTP.** A leftover mount mapped
+`/shared/<x>` to the repository root, so `/shared/data/store.json` returned —
+unauthenticated — every player's pseudonym, country and raw answer, and the
+per-round wisdom tally: the answer key, for a round still open. Nothing
+referenced the mount; it has been removed rather than restricted, and the
+containment check behind it was itself wrong (it compared paths with
+`startsWith`, under which `/srv/app-data` counts as being inside `/srv/app`).
+
+A `?date=` query is now bounded to a week either side of today. Reading the
+rotation ahead is harmless — it is public and a week long — but an unbounded
+date let a caller mint and persist round state for any day in the calendar, one
+request at a time.
 
 ### How cheating is actually prevented
 
@@ -432,7 +453,7 @@ mockup.
 - One-scored-attempt-per-day enforced on the server
 - Offline play: the full game shell is cached, submissions queue and resync
 - Installable as a phone app (PWA), self-hosted fonts, no third-party trackers
-- A 42-check end-to-end test suite covering the API, every screen, every
+- A 47-check end-to-end test suite covering the API, every screen, every
   discipline, all seven scoring curves, every attempt to cheat the endpoint, and
   a fairness suite that deletes colour from 720 generated puzzles to prove the
   pattern round is solvable without colour vision

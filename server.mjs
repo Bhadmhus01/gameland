@@ -22,6 +22,7 @@ import {
   percentile,
   utcDateString,
   roundIdOf,
+  dayIndexOf,
   roundNumberOf,
   disciplineForDate,
   weekIdOf,
@@ -319,6 +320,64 @@ function today() {
   return utcDateString(new Date());
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Whole days from `base` to `dateStr`. Negative means `dateStr` is earlier. */
+function dayDelta(dateStr, base = today()) {
+  return dayIndexOf(dateStr) - dayIndexOf(base);
+}
+
+/**
+ * A `?date=` may only name a day near today. The rotation is a week long and
+ * the upcoming disciplines are already public, so reading a few days either
+ * way gives nothing away — but an unbounded date would let a caller mint round
+ * state for any day in the calendar, one request at a time. History is real
+ * (past days are played) and preview is useful (future days are checked before
+ * they launch), so the window is generous; it is only bounded.
+ */
+const DATE_WINDOW_DAYS = 7;
+
+function readDate(raw) {
+  if (raw == null || raw === "") return today();
+  const v = String(raw);
+  if (!ISO_DATE.test(v)) return null;
+  const delta = dayDelta(v);
+  if (!Number.isFinite(delta) || Math.abs(delta) > DATE_WINDOW_DAYS) return null;
+  return utcDateString(new Date(Date.parse(v + "T00:00:00Z")));
+}
+
+/**
+ * The day a submission is allowed to be about.
+ *
+ * The client used to name the date, which meant a player could post a result
+ * for any day at all — including days that had not happened. Probing future
+ * rounds with throwaway pseudonyms and then submitting the best result found
+ * would seed a perfect score weeks in advance.
+ *
+ * So the server decides, with one honest exception: UTC midnight is arbitrary
+ * for most of the world, and a player who starts at 23:58 and finishes at 00:01
+ * should not lose their round. A submission for yesterday is accepted for
+ * GRACE_MINUTES after midnight and no longer.
+ */
+const GRACE_MINUTES = 120;
+
+function submissionDate(raw) {
+  const claimed = raw == null || raw === "" ? today() : String(raw);
+  if (!ISO_DATE.test(claimed)) return { error: "bad_date" };
+
+  const t = today();
+  if (claimed === t) return { date: t };
+
+  // Yesterday, only just after midnight, and only when not pinned for testing.
+  if (!process.env.AYO_DATE && dayDelta(claimed, t) === -1) {
+    const now = new Date();
+    const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+    if (minutes < GRACE_MINUTES) return { date: claimed };
+  }
+
+  return { error: dayDelta(claimed, t) > 0 ? "round_not_open" : "round_closed" };
+}
+
 function buildRoundPayload(dateStr, deviceId) {
   const roundId = roundIdOf(dateStr);
   const discipline = disciplineForDate(dateStr);
@@ -354,7 +413,8 @@ async function handleApi(req, res, url) {
 
   /* --- today's round ------------------------------------------------ */
   if (p === "/api/rounds/today" && req.method === "GET") {
-    const dateStr = q.get("date") || today();
+    const dateStr = readDate(q.get("date"));
+    if (!dateStr) return sendJson(res, 400, { error: "bad_date" });
     return sendJson(res, 200, buildRoundPayload(dateStr, q.get("deviceId")));
   }
 
@@ -365,7 +425,8 @@ async function handleApi(req, res, url) {
    * for a near-certain maximum. Once you have played, the key is yours.
    */
   if (p === "/api/wisdom" && req.method === "GET") {
-    const dateStr = q.get("date") || today();
+    const dateStr = readDate(q.get("date"));
+    if (!dateStr) return sendJson(res, 400, { error: "bad_date" });
     const roundId = roundIdOf(dateStr);
     const { q: question, options } = wisdomQuestionFor(roundId);
 
@@ -393,7 +454,8 @@ async function handleApi(req, res, url) {
 
   /* --- day / week summary for the deep-dive page -------------------- */
   if (p === "/api/day" && req.method === "GET") {
-    const dateStr = q.get("date") || today();
+    const dateStr = readDate(q.get("date"));
+    if (!dateStr) return sendJson(res, 400, { error: "bad_date" });
     const roundId = roundIdOf(dateStr);
     const d = disciplineForDate(dateStr);
     return sendJson(res, 200, {
@@ -409,7 +471,8 @@ async function handleApi(req, res, url) {
 
   /* --- leaderboards -------------------------------------------------- */
   if (p === "/api/leaderboard" && req.method === "GET") {
-    const dateStr = q.get("date") || today();
+    const dateStr = readDate(q.get("date"));
+    if (!dateStr) return sendJson(res, 400, { error: "bad_date" });
     const roundId = roundIdOf(dateStr);
     const scope = q.get("scope") || "world";
     const iso = (q.get("country") || "").toUpperCase();
@@ -490,7 +553,8 @@ async function handleApi(req, res, url) {
 
   /* --- national feed ------------------------------------------------- */
   if (p === "/api/feed" && req.method === "GET") {
-    const dateStr = q.get("date") || today();
+    const dateStr = readDate(q.get("date"));
+    if (!dateStr) return sendJson(res, 400, { error: "bad_date" });
     const roundId = roundIdOf(dateStr);
     const r = roundState(roundId, dateStr);
     const items = r.feed.slice(-FEED_PUBLIC).reverse();
@@ -671,7 +735,11 @@ function wisdomShares(roundId, dateStr, choice) {
  * Enforces the central rule: one scored attempt, per player, per day.
  */
 function recordSubmission(item) {
-  const dateStr = item.date || today();
+  const when = submissionDate(item.date);
+  if (when.error) {
+    return { ok: false, code: 409, error: when.error, today: today() };
+  }
+  const dateStr = when.date;
   const roundId = roundIdOf(dateStr);
   const discipline = DISCIPLINE_BY_ID.get(item.discipline);
   if (!discipline) return { ok: false, code: 400, error: "bad_discipline" };
@@ -804,20 +872,42 @@ function readBody(req) {
 
 /* ------------------------------------------------------------- static files */
 
+/**
+ * Is `child` inside `parent`?
+ *
+ * A plain startsWith() is wrong: "/srv/app-data" starts with "/srv/app", so a
+ * sibling directory would be treated as contained. Compare against the parent
+ * plus a separator instead.
+ */
+function isInside(parent, child) {
+  if (child === parent) return true;
+  return child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
+}
+
 async function serveStatic(req, res, url) {
-  let rel = decodeURIComponent(url.pathname);
+  let rel;
+  try {
+    rel = decodeURIComponent(url.pathname);
+  } catch {
+    res.writeHead(400);
+    return res.end("Bad request");
+  }
+  if (rel.includes("\0")) {
+    res.writeHead(400);
+    return res.end("Bad request");
+  }
   if (rel === "/") rel = "/index.html";
 
-  // Shared modules live at the repo root and are mounted at /shared.
-  let filePath;
-  if (rel.startsWith("/shared/")) {
-    filePath = path.join(__dirname, rel.replace("/shared/", ""));
-  } else {
-    filePath = path.join(PUBLIC_DIR, rel);
-  }
-
-  const resolved = path.resolve(filePath);
-  if (!resolved.startsWith(PUBLIC_DIR) && !resolved.startsWith(__dirname)) {
+  // Only public/ is served.
+  //
+  // There used to be a second mount here, "/shared/<x>" → repo root, for shared
+  // modules. Nothing referenced it, and because it served from the repo root it
+  // exposed data/store.json: every player's pseudonym, country and raw answer,
+  // and the per-round wisdom tally — i.e. the answer key, before the round it
+  // belongs to. Removed rather than restricted; the modules it existed for are
+  // under public/js.
+  const resolved = path.resolve(path.join(PUBLIC_DIR, rel));
+  if (!isInside(PUBLIC_DIR, resolved)) {
     res.writeHead(403);
     return res.end("Forbidden");
   }

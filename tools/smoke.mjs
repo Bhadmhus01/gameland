@@ -790,7 +790,107 @@ await step("a client-declared score is ignored", async () => {
   return `claimed 1000, server awarded ${j.score}`;
 });
 
-/* 11. Boot the whole application exactly as a browser would. */
+/* 11. What the server will believe from a client.
+ *
+ * The endpoint used to trust two things it should not have: which discipline a
+ * result was for (fixed in the previous commit) and which day it was for. This
+ * section holds the line on both, and on the files the server will hand out.
+ */
+
+await step("the data store is never served over HTTP", async () => {
+  // /shared/<x> used to map to the repo root, so /shared/data/store.json
+  // returned every pseudonym, country and raw answer — and the wisdom tally,
+  // before its round.
+  const paths = [
+    "/shared/data/store.json",
+    "/shared/../data/store.json",
+    "/shared/%2e%2e/data/store.json",
+    "/shared/server.mjs",
+    "/data/store.json",
+    "/data/../data/store.json",
+  ];
+  for (const p of paths) {
+    const res = await fetch(`${BASE}${p}`);
+    if (res.status === 200) {
+      const body = await res.text();
+      throw new Error(`${p} served ${body.length} bytes`);
+    }
+  }
+  return `${paths.length} paths refused`;
+});
+
+await step("path traversal cannot escape the web root", async () => {
+  for (const p of ["/../../etc/passwd", "/js/../../../etc/passwd", "/%2e%2e/etc/passwd"]) {
+    const res = await fetch(`${BASE}${p}`);
+    const body = res.status === 200 ? await res.text() : "";
+    if (body.includes("root:")) throw new Error(`${p} leaked /etc/passwd`);
+  }
+  // And the server still serves the files it is supposed to.
+  for (const p of ["/", "/css/app.css", "/js/games.js", "/icon.svg"]) {
+    const res = await fetch(`${BASE}${p}`);
+    if (res.status !== 200) throw new Error(`${p} -> ${res.status}, expected 200`);
+  }
+  return "traversal refused · the real files still serve";
+});
+
+await step("a result cannot be submitted for a future day", async () => {
+  const tomorrow = new Date(Date.parse(liveRound.date + "T00:00:00Z") + 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  const res = await post({
+    date: tomorrow,
+    discipline: liveDiscipline,
+    pseudo: "Tomorrow_" + RUN,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+  });
+  // Naming a future discipline would be caught by the discipline check; naming
+  // today's is what the old code allowed. Both must fail.
+  if (res.ok) throw new Error(`a result for ${tomorrow} was accepted and scored ${res.score}`);
+  if (res.error !== "round_not_open") {
+    throw new Error(`refused with "${res.error}", expected "round_not_open"`);
+  }
+  return `${tomorrow} refused`;
+});
+
+await step("a result cannot be submitted for a day already gone", async () => {
+  const long_ago = "2026-09-01";
+  const res = await post({
+    date: long_ago,
+    discipline: "wisdom",
+    pseudo: "Past_" + RUN,
+    country: "NG",
+    raw: { choice: 1 },
+  });
+  if (res.ok) throw new Error(`a result for ${long_ago} was accepted`);
+  if (res.error !== "round_closed") {
+    throw new Error(`refused with "${res.error}", expected "round_closed"`);
+  }
+  return `${long_ago} refused`;
+});
+
+await step("a date query is bounded to the rotation window", async () => {
+  const far = "2031-01-01";
+  const res = await fetch(`${BASE}/api/rounds/today?date=${far}`);
+  if (res.status !== 400) {
+    throw new Error(`?date=${far} returned ${res.status}, expected 400`);
+  }
+
+  // The near window still works both ways: history is real, preview is useful.
+  const near = async (delta) => {
+    const d = new Date(Date.parse(liveRound.date + "T00:00:00Z") + delta * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const r = await fetch(`${BASE}/api/rounds/today?date=${d}`);
+    if (r.status !== 200) throw new Error(`?date=${d} -> ${r.status}`);
+    return d;
+  };
+  const back = await near(-3);
+  const fwd = await near(3);
+  return `${far} rejected · ${back} and ${fwd} still served`;
+});
+
+/* 12. Boot the whole application exactly as a browser would. */
 console.log("\napp boot (full client, live server)");
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
