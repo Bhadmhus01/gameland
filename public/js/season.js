@@ -90,6 +90,7 @@ export function seasonInfo(dateStr) {
     ...seasonByIndex(index),
     position,
     roundInSeason: position + 1,
+    weekInSeason: Math.floor(position / WEEK_ROUNDS) + 1,
     weekId: weekIdOf(dateStr),
     // How many rounds of the season have been offered as of this date.
     roundsElapsed: Math.min(SEASON_ROUNDS, position + 1),

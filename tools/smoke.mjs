@@ -1699,6 +1699,17 @@ await step("the season endpoints answer, and refuse bad input", async () => {
   if (!live.rules.why) throw new Error("the rule is not explained where it is applied");
   if (live.season.roundsElapsed < 1 || live.season.roundsElapsed > 84) throw new Error("rounds elapsed is nonsense");
   if (live.season.status !== "running") throw new Error(`status ${live.season.status}`);
+  // Every field the Season screen reads must be present in the payload. A
+  // missing one renders as "undefined" on a page nobody tests by looking at it.
+  for (const key of ["id", "number", "start", "end", "totalRounds", "totalWeeks", "roundsElapsed", "roundsRemaining", "weekInSeason", "roundInSeason", "status"]) {
+    if (live.season[key] === undefined) throw new Error(`the season payload is missing "${key}"`);
+  }
+  if (live.season.weekInSeason < 1 || live.season.weekInSeason > 12) {
+    throw new Error(`weekInSeason ${live.season.weekInSeason} is out of range`);
+  }
+  if (live.season.roundsElapsed + live.season.roundsRemaining !== 84) {
+    throw new Error("elapsed + remaining does not add up to the season");
+  }
 
   const bad = await fetch(`${BASE}/api/season?date=2031-01-01`);
   if (bad.status !== 400) throw new Error(`a far-future date returned ${bad.status}`);
