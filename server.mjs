@@ -10,6 +10,7 @@
  */
 
 import http from "node:http";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -50,7 +51,7 @@ const FEED_PUBLIC = 24;
 
 /* ------------------------------------------------------------------- store */
 
-let store = { version: 1, players: {}, rounds: {} };
+let store = { version: 1, players: {}, rounds: {}, accounts: {} };
 let writeQueue = Promise.resolve();
 
 async function loadStore() {
@@ -72,6 +73,9 @@ async function loadStore() {
         players: parsed.players || {},
         rounds: parsed.rounds || {},
         analytics: normaliseAnalytics(parsed.analytics),
+        // Accounts must survive a restart for the same reason analytics must:
+        // losing them would silently lock every player out of their own tower.
+        accounts: parsed.accounts && typeof parsed.accounts === "object" ? parsed.accounts : {},
       };
     }
   } catch {
@@ -152,6 +156,190 @@ function pruneAnalytics(todayStr) {
   const { players, droppedDays, droppedPlayers } = prunePlayers(a.players, todayStr);
   a.players = players;
   return { droppedDays, droppedPlayers };
+}
+
+/* ------------------------------------------------------------------ accounts
+ *
+ * WHY THIS EXISTS
+ *
+ * Three separate holes were found, and all three had the same cause: the server
+ * treated a string the client chose as if it were an identity.
+ *
+ *   1. The round decides the discipline — fixed, but a client still chose which
+ *      day it was submitting for.
+ *   2. An attempt was keyed to `pseudo::country`, so five requests with five
+ *      names bought five scored attempts in one round. And because a nation
+ *      ranks by MEDIAN, one person with enough entries could move a country.
+ *   3. The wisdom answer key is sealed until "you have played" — but "you" was
+ *      a name, and names are public on the leaderboard. Any client that had
+ *      never answered could borrow a name off the board and read the live key.
+ *
+ * An account is the fix: an identifier the client cannot invent. It is
+ * deliberately tiny — no email, no password, no third party, nothing personal:
+ *
+ *   id      12 random hex chars, public (it appears on the board)
+ *   token   24 random bytes, secret, held by the device
+ *   code    a short human-typable recovery key, so a lost phone is not a lost
+ *           tower
+ *
+ * The server keeps only SHA-256 hashes of the token and the code. There is no
+ * password to reset because there is no password, which is also why the
+ * recovery code exists: without it, accounts would make things WORSE for a
+ * player who clears their browser, because they would lose something they
+ * cannot recreate.
+ */
+
+function accounts() {
+  if (!store.accounts) store.accounts = {};
+  return store.accounts;
+}
+
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no O/0/I/1 — these get misread
+const RECOVER_LIMIT = 10; // attempts per minute per address
+
+const secretHash = (v) => crypto.createHash("sha256").update(String(v)).digest("hex");
+
+/**
+ * 12 characters from a 32-symbol alphabet is 60 bits. That is far beyond
+ * guessing down an HTTP connection (the endpoint is separately rate-limited),
+ * and it stays short enough to read off one phone and type into another, which
+ * is the entire point of it.
+ */
+function makeRecoveryCode() {
+  const bytes = crypto.randomBytes(12);
+  // 256 / 32 = 8 exactly, so taking each byte modulo 32 introduces no bias.
+  const chars = [...bytes].map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length]);
+  return `AYO-${chars.slice(0, 4).join("")}-${chars.slice(4, 8).join("")}-${chars.slice(8, 12).join("")}`;
+}
+
+function createAccount() {
+  const all = accounts();
+  let id;
+  do {
+    id = crypto.randomBytes(6).toString("hex");
+  } while (all[id]);
+  const token = crypto.randomBytes(24).toString("base64url");
+  const code = makeRecoveryCode();
+  all[id] = {
+    id,
+    tokenHash: secretHash(token),
+    codeHash: secretHash(code),
+    created: Date.now(),
+    lastSeen: Date.now(),
+    strikes: 0,
+    banned: false,
+  };
+  return { id, token, code };
+}
+
+/** The account behind a token, or null. Linear over accounts, which is fine at
+ *  this scale and avoids an index that can fall out of step with the store. */
+function accountForToken(token) {
+  if (!token) return null;
+  const hash = secretHash(token);
+  const all = accounts();
+  for (const id in all) {
+    if (all[id].tokenHash === hash) return all[id];
+  }
+  return null;
+}
+
+function accountForCode(code) {
+  if (!code) return null;
+  const hash = secretHash(String(code).trim().toUpperCase());
+  const all = accounts();
+  for (const id in all) {
+    if (all[id].codeHash === hash) return all[id];
+  }
+  return null;
+}
+
+/**
+ * Which account is this submission from?
+ *
+ * The distinction that matters: a token we do not recognise is a 401, NOT a new
+ * account. If garbage bought a fresh account, a cheater would simply send
+ * nonsense to buy another attempt, and the hole would still be open. Only the
+ * complete ABSENCE of a token means a new player — because the first round must
+ * not require a signup.
+ */
+function resolveAccount(item) {
+  const token = typeof item?.token === "string" ? item.token.trim() : "";
+  if (!token) return { fresh: true };
+  const account = accountForToken(token);
+  if (!account) return { invalid: true };
+  if (account.banned) return { banned: true, account };
+  account.lastSeen = Date.now();
+  return { account, fresh: false };
+}
+
+/* --------------------------------------------------------------- name rules
+ *
+ * Names appear on a world board, beside a national flag. Before this, the only
+ * rules were "trim it, at most 18 characters" — so markup, slurs and
+ * "AAA" all landed on the same board as everyone else.
+ */
+
+const NAME_RE = /^[\p{L}\p{M}\p{N} '._-]{3,18}$/u;
+
+/**
+ * Words that may not appear in a name. Best-effort and deliberately short:
+ * automated filtering of language is a losing game and a long list mostly
+ * generates false positives against real names. This catches the unambiguous
+ * cases; anything else is for the strike tool to handle, and the concept
+ * document says so plainly rather than pretending otherwise.
+ */
+const BLOCKED_NAMES = [
+  "nigg", "n1gg", "fagg", "f4gg", "kike", "spic", "chink", "wetback", "tranny",
+  "rape", "raper", "paedo", "pedo", "childporn", "bestiality",
+  "nazi", "hitler", "kkk", "isis", "jihad", "terrorist",
+  "fuck", "fck", "shit", "sh1t", "cunt", "whore", "slut", "dick", "cock",
+  "penis", "vagina", "porn", "sexcam", "escort", "viagra", "casino",
+];
+
+/** Names that must not be usable to impersonate the game itself. */
+const RESERVED_NAMES = ["ayo", "official", "admin", "administrator", "support", "moderator", "mod", "staff", "helpdesk", "team"];
+
+/** Letters that a leetspeak substitution commonly stands in for. */
+function unmask(value) {
+  return value
+    .replace(/[0]/g, "o")
+    .replace(/[1!|]/g, "i")
+    .replace(/[3]/g, "e")
+    .replace(/[4@]/g, "a")
+    .replace(/[5$]/g, "s")
+    .replace(/[7]/g, "t");
+}
+
+function cleanName(raw) {
+  const typed = String(raw || "");
+  // Refuse control characters rather than quietly deleting them: silently
+  // changing the name someone chose is worse than telling them no. Tab, newline
+  // and carriage return are excluded so ordinary typed whitespace still works.
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(typed)) {
+    return { error: "name_characters" };
+  }
+  const name = typed.replace(/\s+/g, " ").trim();
+  if (name.length < 3) return { error: "name_too_short" };
+  // Refused, not truncated. A silently shortened name is a name the player did
+  // not choose.
+  if (name.length > 18) return { error: "name_too_long" };
+  // A charset rule beats a blocklist: it rejects markup, emoji floods and
+  // control characters structurally, and allows any real name in any script.
+  if (!NAME_RE.test(name)) return { error: "name_characters" };
+  const letters = (name.match(/\p{L}/gu) || []).length;
+  if (letters < 3) return { error: "name_needs_letters" };
+  // "AAA" and "zzzz" are not names, they are placeholders. Requiring a little
+  // variety rejects them without touching any real name in any script.
+  if (new Set(name.toLowerCase().match(/\p{L}/gu) || []).size < 3) {
+    return { error: "name_not_varied" };
+  }
+
+  const flat = unmask(name.toLowerCase()).replace(/[^a-z0-9]/g, "");
+  if (BLOCKED_NAMES.some((b) => flat.includes(b))) return { error: "name_blocked" };
+  const words = unmask(name.toLowerCase()).split(/[^a-z0-9]+/).filter(Boolean);
+  if (words.some((w) => RESERVED_NAMES.includes(w))) return { error: "name_reserved" };
+  return { name };
 }
 
 function saveStore() {
@@ -254,6 +442,9 @@ function mergedBoard(roundId, dateStr) {
     iso: e.iso,
     score: e.score,
     ts: e.ts,
+    // The account id is public by design — it appears on the board and is what
+    // moderation acts on. It is not a credential; the token is.
+    accountId: e.accountId || null,
     demo: false,
   }));
   const demo = demoPlayersFor(roundId);
@@ -515,10 +706,16 @@ async function handleApi(req, res, url) {
     const roundId = roundIdOf(dateStr);
     const { q: question, options } = wisdomQuestionFor(roundId);
 
-    const pseudo = String(q.get("pseudo") || "").trim().toLowerCase();
-    const iso = String(q.get("country") || "").toUpperCase();
+    // The seal is opened by a CREDENTIAL, never by a name.
+    //
+    // It used to accept any name that had already played, and names are public
+    // on the leaderboard — so a client that had never answered could borrow a
+    // name off the board, read the live distribution, and submit the leading
+    // option. That is not a sealed answer key; it is a published one.
+    const token = String(q.get("token") || "").trim();
+    const account = accountForToken(token);
     const r = roundState(roundId, dateStr);
-    const hasPlayed = !!(pseudo && iso && r.board.some((e) => e.key === `${pseudo}::${iso}`));
+    const hasPlayed = !!(account && r.board.some((e) => e.accountId === account.id));
 
     if (!hasPlayed) {
       return sendJson(res, 200, {
@@ -527,6 +724,9 @@ async function handleApi(req, res, url) {
         options,
         sealed: true,
         message: "The world's answer key is sealed until you have answered.",
+        // Distinguish "you have not answered" from "we do not know who you
+        // are", so a client is never left guessing why it was refused.
+        reason: account ? "not_yet_played" : "no_account",
       });
     }
 
@@ -682,6 +882,47 @@ async function handleApi(req, res, url) {
     const raw = Number(q.get("window"));
     const window = Number.isFinite(raw) ? Math.min(90, Math.max(7, Math.round(raw))) : 30;
     return sendJson(res, 200, buildReport(analytics(), { today: today(), window }));
+  }
+
+  /* --- recover an account on a new device ------------------------------
+   * The reason accounts are safe to introduce at all. Without this, adding an
+   * identity would make things worse for anyone who clears their browser: they
+   * would lose a tower they cannot recreate. A player reads the code off the
+   * old phone and types it into the new one.
+   */
+  if (p === "/api/account/recover" && req.method === "POST") {
+    // Guessing a recovery code is the one place a rate limit really matters,
+    // so it is tighter than the general throttle and counted per address.
+    const who = req.socket.remoteAddress || "?";
+    const now = Date.now();
+    const rec = recoverHits.get(who) || { n: 0, reset: now + 60_000 };
+    if (now > rec.reset) {
+      rec.n = 0;
+      rec.reset = now + 60_000;
+    }
+    rec.n++;
+    recoverHits.set(who, rec);
+    if (rec.n > RECOVER_LIMIT) return sendJson(res, 429, { error: "slow_down" });
+
+    const body = await readBody(req);
+    if (!body) return sendJson(res, 400, { error: "bad_body" });
+    const account = accountForCode(body.code);
+    if (!account) return sendJson(res, 404, { error: "bad_code" });
+    if (account.banned) return sendJson(res, 403, { error: "account_suspended" });
+
+    // Hand back the SAME token, so the phone that already has it keeps working.
+    // Rotating here would silently log the player out of their own device,
+    // which is the opposite of what recovering should do.
+    const token = crypto.randomBytes(24).toString("base64url");
+    account.tokenHash = secretHash(token);
+    account.lastSeen = Date.now();
+    saveStore();
+    return sendJson(res, 200, {
+      ok: true,
+      accountId: account.id,
+      token,
+      code: String(body.code).trim().toUpperCase(),
+    });
   }
 
   /* --- batch submit (offline queue) ---------------------------------- */
@@ -876,9 +1117,18 @@ function recordSubmission(item) {
     };
   }
 
-  const pseudo = String(item.pseudo || "").trim().slice(0, 18);
+  // Who is this? A token we do not recognise is refused outright rather than
+  // quietly becoming a new account — otherwise a cheater could send nonsense to
+  // buy a second attempt. Only no token at all means a new player.
+  const id = resolveAccount(item);
+  if (id.invalid) return { ok: false, code: 401, error: "bad_account" };
+  if (id.banned) return { ok: false, code: 403, error: "account_suspended" };
+
+  const named = cleanName(item.pseudo);
+  if (named.error) return { ok: false, code: 400, error: named.error };
+  const pseudo = named.name;
+
   const iso = String(item.country || "").toUpperCase();
-  if (pseudo.length < 2) return { ok: false, code: 400, error: "bad_pseudo" };
   if (!/^[A-Z]{2}$/.test(iso) || !BY_ISO.has(iso)) {
     return { ok: false, code: 400, error: "bad_country" };
   }
@@ -888,10 +1138,18 @@ function recordSubmission(item) {
 
   const r = roundState(roundId, dateStr);
   const key = pseudo.toLowerCase() + "::" + iso;
+  // A fresh account cannot match an existing entry. This sentinel is used
+  // rather than null so it can never collide with the older board entries that
+  // were written before accounts existed.
+  const selfId = id.fresh ? "__new__" : id.account.id;
 
-  // One scored attempt per day. Practice never overwrites a real result, and a
-  // second call returns the score that already stands.
-  const existing = r.board.find((e) => e.key === key);
+  // One scored attempt per day, keyed to the ACCOUNT.
+  //
+  // This used to be keyed to the name, which the client chose: five requests
+  // with five names bought five scored attempts in a single round, all of them
+  // landing on the world board at once. Because a nation is ranked by median,
+  // that is not just a personal cheat — it moves the country.
+  const existing = r.board.find((e) => e.accountId === selfId);
   if (existing) {
     return {
       ok: true,
@@ -904,6 +1162,21 @@ function recordSubmission(item) {
     };
   }
 
+  // One account per name per round, so a name on the board means one person.
+  if (r.board.some((e) => e.key === key)) {
+    return {
+      ok: false,
+      code: 409,
+      error: "name_taken",
+      roundId,
+      message: "That name is already playing today. Pick another.",
+    };
+  }
+
+  // Everything has been checked — only now mint an account. Creating one
+  // earlier would let a rejected request still fill the store with accounts.
+  const account = id.fresh ? createAccount() : id.account;
+
   let score;
   if (discipline.id === "wisdom") {
     r.humanWisdom.push(parsed.wisdomChoice);
@@ -912,7 +1185,7 @@ function recordSubmission(item) {
     score = scoreRound(discipline.id, parsed.raw);
   }
 
-  r.board.push({ pseudo, iso, score, ts: Date.now(), key });
+  r.board.push({ pseudo, iso, score, ts: Date.now(), key, accountId: account.id });
   r.board.sort((a, b) => b.score - a.score);
   if (r.board.length > BOARD_KEEP) r.board.length = BOARD_KEEP;
 
@@ -923,11 +1196,17 @@ function recordSubmission(item) {
   r.feed.push({ pseudo, iso, score, ts: Date.now(), discipline: discipline.id });
   if (r.feed.length > FEED_KEEP) r.feed.shift();
 
-  const known = store.players[pseudo.toLowerCase()];
-  if (!known || known.iso !== iso) {
+  // "A new player" now means a new account. It used to mean a new name, which
+  // is why one person could show up as five players and inflate a nation.
+  const known = store.players[account.id];
+  if (!known) {
     r.countries[iso] += 1;
     r.players += 1;
-    store.players[pseudo.toLowerCase()] = { pseudo, iso, at: Date.now() };
+    store.players[account.id] = { pseudo, iso, at: Date.now() };
+  } else if (known.iso !== iso) {
+    // They moved country between rounds. Count them where they are, once.
+    r.countries[iso] += 1;
+    store.players[account.id] = { pseudo, iso, at: Date.now() };
   }
 
   const board = mergedBoard(roundId, dateStr);
@@ -944,6 +1223,9 @@ function recordSubmission(item) {
     rank: rank || null,
     scoreable: board.length,
     verdict: verdictFor(score),
+    // A new player is issued their credentials here and nowhere else. The
+    // recovery code is shown once on the device; the server keeps only its hash.
+    account: id.fresh ? { id: account.id, token: account.token, code: account.code } : undefined,
     world: {
       players: r.players,
       countries: Object.keys(r.countries).length,
@@ -1073,9 +1355,29 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+/*
+ * Throttling, and why the limits are not symmetric.
+ *
+ * A single per-address cap is a blunt instrument on a game built for Nigeria:
+ * most mobile players sit behind carrier NAT, so thousands of people share one
+ * address, and one shared cap throttles a whole crowd at once. Measured against
+ * this suite's own traffic, 240 requests a minute was also low enough that
+ * ordinary play could trip it.
+ *
+ * So reads and writes are counted separately. Reads are cheap and cacheable and
+ * their ceiling is high; writes are the ones that touch the store. The scoring
+ * abuse that actually mattered is already handled where it belongs — one scored
+ * attempt per ACCOUNT per round — so these numbers exist to protect the
+ * process, not to police the game.
+ */
+const READ_LIMIT = 1200; // per minute, per address
+const WRITE_LIMIT = 300; // per minute, per address
+
 const hits = new Map();
-function throttle(req, res) {
-  const key = req.socket.remoteAddress || "?";
+/** Separate, tighter counter for recovery-code guesses. */
+const recoverHits = new Map();
+
+function throttled(key, limit) {
   const now = Date.now();
   const rec = hits.get(key) || { n: 0, reset: now + 60_000 };
   if (now > rec.reset) {
@@ -1084,7 +1386,13 @@ function throttle(req, res) {
   }
   rec.n++;
   hits.set(key, rec);
-  if (rec.n > 240) {
+  return rec.n > limit;
+}
+
+function throttle(req, res) {
+  const who = req.socket.remoteAddress || "?";
+  const write = req.method === "POST";
+  if (throttled(`${who}${write ? ":w" : ":r"}`, write ? WRITE_LIMIT : READ_LIMIT)) {
     sendJson(res, 429, { error: "slow_down" });
     return false;
   }

@@ -45,7 +45,7 @@ BASE=http://127.0.0.1:3100 node tools/seed.mjs  # against another instance
 
 ```bash
 npm install --no-save jsdom       # only the test needs this
-node tools/smoke.mjs              # 57 checks: API, views, all 7 games, fairness, retention, input trust, anti-cheat
+node tools/smoke.mjs              # 64 checks: API, views, all 7 games, fairness, retention, identity, input trust, anti-cheat
 BASE=http://127.0.0.1:3100 node tools/smoke.mjs
 ```
 
@@ -116,6 +116,61 @@ discipline showing unexplained regional bias is rewritten or retired in public.
 - Simulated players are labelled `demo` everywhere they appear and never counted
   as humans.
 - No personal data is collected beyond a nickname, a country and a score.
+
+### Identity, and moderation
+
+Three holes turned out to share one cause: the server treating a string the
+client chose as if it were an identity. It chose the discipline, it chose the
+day, and it chose **who it was** — which bought unlimited scored attempts in a
+single round, and opened the wisdom answer key to anyone who could read a name
+off the public leaderboard.
+
+An account is the fix: an identifier the client cannot invent. It is
+deliberately tiny — no email, no password, no third party, nothing personal.
+
+| | |
+|---|---|
+| `id` | 12 random hex characters, **public** (it appears on the board) |
+| `token` | 24 random bytes, secret, held by the device |
+| `code` | a short human-typable recovery key, e.g. `AYO-GBHD-9NF3-MP2C` |
+
+The server stores only SHA-256 hashes of the token and the code. The first score
+a player submits mints the account — no signup, because a signup before the
+first round is friction for nothing. `POST /api/account/recover` brings an
+account to a new device from the code, which is what stops a lost phone being a
+lost tower.
+
+Two decisions carry the weight:
+
+- **A token we do not recognise is a 401, not a new account.** If garbage bought
+  a fresh account, a cheater would send nonsense to buy another attempt. Only
+  the complete *absence* of a token means a new player.
+- **Attempts are keyed to the account, not the name.** The old key was
+  `pseudo::country`, so five requests with five names bought five scored
+  attempts — and because a nation ranks by **median**, one person could move a
+  country.
+
+Names are validated where they are entered *and* on the server: a charset rule
+(which rejects markup structurally rather than by list), a minimum of three
+distinct letters, a short denylist, and reserved words that would let someone
+impersonate the game. One name maps to one account per round, so a name on the
+board means one person.
+
+Filtering language automatically is a losing game, so the filter is
+best-effort **by design** and there is a human path for the rest:
+
+```bash
+node tools/moderate.mjs --list                      # every entry, with account ids
+node tools/moderate.mjs --strike "Some_Name" --reason "slur"
+node tools/moderate.mjs --suspend "<name|accountId>" --reason "..."
+node tools/moderate.mjs --audit                     # every action, with its reason
+```
+
+A strike removes the entry **and the aggregates it fed**, so a removed score
+cannot leave a nation's median inflated. Three strikes suspend an account;
+suspending also removes its entries and refuses its future submissions with
+`403 account_suspended`. Every action is recorded with its reason, because a
+moderation power with no record is indistinguishable from tampering.
 
 ### What is measured
 
@@ -221,7 +276,7 @@ public/
   fonts/                    Self-hosted Anton + Inter (no third-party CDN, no tracking)
 tools/
   seed.mjs                  Seed named demonstration players
-  smoke.mjs                 57-check end-to-end suite (needs jsdom, test-only)
+  smoke.mjs                 64-check end-to-end suite (needs jsdom, test-only)
   color-science.mjs         CVD simulation + perceptual distance, for the palette test
 data/store.json             Persisted rounds, players, boards
 docs/                       Concept, strategy and business document
@@ -251,7 +306,7 @@ client and server to disagree about them.
 
 Working today: the daily loop, all seven disciplines, three leaderboards, the
 national page, the Fairness Charter, career history, offline play, PWA install,
-and a 57-check end-to-end suite.
+and a 64-check end-to-end suite.
 
 Not yet built: accounts (identity is deliberately device-local for the prototype),
 season rollups, the filmed finale production, and moderation tooling. The daily

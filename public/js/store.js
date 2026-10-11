@@ -18,6 +18,10 @@ const DEFAULTS = {
   pseudo: "",
   iso: "",
   deviceId: deviceId(),
+  // The account the server issued this device. `token` is the credential and is
+  // never sent anywhere except /api/submit and /api/wisdom; `code` is the
+  // recovery key the player can read off one phone and type into another.
+  account: { id: "", token: "", code: "" },
   results: {},   // roundId -> { score, discipline, raw, rank, percentile, at }
   queue: [],     // unsent submissions (offline resilience)
   streak: { last: "", count: 0 },
@@ -55,6 +59,21 @@ export const store = {
   },
   get identity() {
     return { pseudo: state.pseudo, iso: state.iso, deviceId: state.deviceId };
+  },
+  get account() {
+    return state.account || { id: "", token: "", code: "" };
+  },
+  /** Remember what the server issued. Called once, on a player's first score. */
+  setAccount({ id, token, code }) {
+    state.account = {
+      id: id || state.account?.id || "",
+      token: token || state.account?.token || "",
+      code: code || state.account?.code || "",
+    };
+    persist();
+  },
+  get hasAccount() {
+    return !!state.account?.token;
   },
   get hasIdentity() {
     return state.pseudo.trim().length >= 2 && /^[A-Z]{2}$/.test(state.iso);
@@ -124,11 +143,19 @@ export const store = {
     }
     return seen.size;
   },
+  /**
+   * Clear this device. The account goes with it — it is the player's identity,
+   * so "reset" means a fresh start — but the recovery code is deliberately
+   * returned to the caller so the UI can show it one last time before it is
+   * gone. Losing a tower silently is exactly what accounts exist to prevent.
+   */
   reset() {
     const dev = state.deviceId;
     const pref = state.analytics;
+    const code = state.account?.code || "";
     state = { ...DEFAULTS, deviceId: dev, analytics: pref };
     persist();
+    return { code };
   },
 };
 

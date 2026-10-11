@@ -328,6 +328,75 @@ rotation ahead is harmless — it is public and a week long — but an unbounded
 date let a caller mint and persist round state for any day in the calendar, one
 request at a time.
 
+### The client does not choose who it is
+
+The third and last version of the same bug. The server had already stopped
+letting a client choose the discipline and choose the day. It was still letting
+it choose **who it was** — and that one was doing more damage than either:
+
+- **Unlimited scored attempts.** An attempt was keyed to `pseudo::country`, a
+  string the client picked. Five requests with five names bought five separate
+  scored attempts in one round, and all five sat on the world board at once.
+- **One person could move a country.** Nations are ranked by *median*, which was
+  the whole point of ranking by median — population cannot inflate it. But five
+  entries from one person can, and a loop makes it hundreds.
+- **The sealed answer key was not sealed.** It opened for any *name* that had
+  already played. Names are published on the leaderboard, so a client that had
+  never answered could borrow a name off the board, read the live distribution,
+  and submit the leading option for a near-certain maximum. The seal was
+  guarding the wrong thing.
+
+All three close the same way: an account, meaning an identifier the client
+cannot invent. It is deliberately tiny, because everything larger would be a
+tax on the people this game most wants to reach:
+
+| | |
+|---|---|
+| `id` | 12 random hex characters, public — it is on the board |
+| `token` | 24 random bytes, secret, held by the device |
+| `code` | a human-typable recovery key, read off one phone and typed into another |
+
+No email, no password, no third party, nothing personal, and only hashes are
+stored. The account is minted on a player's **first score**, because a signup
+before the first round is friction for nothing.
+
+Two decisions carry the weight, and both are written down because either one
+inverted would reopen the hole:
+
+**A token we do not recognise is a refusal, never a new account.** If garbage
+bought a fresh account, a cheater would send nonsense to buy another attempt.
+Only the complete *absence* of a token means a new player.
+
+**Attempts belong to the account, not to the name.** This is what makes "one
+round, one score" a rule rather than a suggestion.
+
+The honest limitation: creating a new account is still free, so a determined
+cheat can still start over. Accounts remove *cheap* replay — the kind that takes
+one request — not determined fraud. Making that hard needs device attestation or
+identity documents, and both would cost more privacy than this game is willing
+to spend. It is also why a place in the televised finale is confirmed in person,
+and why the daily board is a leaderboard rather than a qualification list.
+
+### Names, and the human in the loop
+
+Names appear on a world board, beside a national flag. Before this, the only
+rules were "trim it, at most 18 characters" — so markup, slurs and placeholders
+all landed on the same board as everybody else.
+
+Names are now checked where they are typed *and* on the server: a charset rule
+(which rejects markup structurally rather than by an ever-growing list), at
+least three distinct letters, a short denylist, and reserved words that would
+let someone impersonate the game itself. One name maps to one account per
+round, so a name on the board means one person.
+
+Automated filtering of language is a losing game — every list long enough to
+catch everything starts rejecting real surnames — so the filter is best-effort
+by design, and that is stated rather than implied. What covers the rest is a
+human with a tool: a strike removes an entry **and the aggregates it fed**, so
+a removed score cannot leave a nation's median inflated. Three strikes suspend
+an account. Every action is recorded with its reason, because a moderation
+power with no record is indistinguishable from tampering.
+
 ### How cheating is actually prevented
 
 | Attack | Defence |
@@ -428,6 +497,8 @@ against.
 | **Some disciplines may carry cultural bias** (e.g. rhythm familiarity, or comfort with timed tasks) | Real, and the most serious technical risk. | Publish norms by country from day one; monitor residuals; retire biased disciplines publicly. The seven-faculty rotation means no single bias decides a season. |
 | **Cheating at scale** (emulators, farms, collusion) | Certain to be attempted. | Server-side scoring already removes the largest hole. Add device attestation, anomaly detection and prize-tier manual review as stakes rise. |
 | **Timezone fairness** | A player in New Zealand plays first and could leak the task. | Type A tasks are unshareable and Type B tasks are per-player — a leak is nearly worthless. This is a design property, not a policy. |
+| **Determined multi-account fraud** | Creating a new account is free, so someone determined can start over after being suspended. Accounts remove cheap replay, not fraud. | Accepted and documented. Hardening this needs device attestation or identity documents, and both cost more privacy than this game is willing to spend. Finale places are confirmed in person for exactly this reason. |
+| **Language of the questions** | *Think Like Earth* is written in English. A player who does not read English cannot play that round, and read-aloud only helps if their device speaks it. | A real gap, and a large one — it is the round that carries the most cultural interest. Translation into the launch market's languages is the honest fix; a language-free substitute would be inventing a new psychophysics test and risking cultural bias, which is worse. |
 | **Accessibility** | This was the project's worst failure: the first version of the pattern round varied only the *colour* of identical shapes, and the attention round tinted its answer gold. Roughly 8% of men worldwide could not solve the first, and the second was not an attention test for anyone who could see colour. | Fixed, and enforced by automated test rather than intention — see the accessibility section below. Motor impairments remain only partly addressed. |
 | **Cold start in a new country** | An empty national table kills retention. | The labelled demo world plus diaspora seeding. Honest labelling protects trust while it fills. |
 | **Fatigue with a daily format** | Real; day-40 drop-off is the norm. | Seven faculties in rotation, weekly towers, national pride, and practice mode for people who want more. |
@@ -536,7 +607,7 @@ mockup.
 - One-scored-attempt-per-day enforced on the server
 - Offline play: the full game shell is cached, submissions queue and resync
 - Installable as a phone app (PWA), self-hosted fonts, no third-party trackers
-- A 57-check end-to-end test suite covering the API, every screen, every
+- A 64-check end-to-end test suite covering the API, every screen, every
   discipline, all seven scoring curves, every attempt to cheat the endpoint, and
   a fairness suite that deletes colour from 720 generated puzzles to prove the
   pattern round is solvable without colour vision
@@ -567,6 +638,7 @@ is a contained change behind a single function.
 | 1–2 | Accounts (phone-number optional), season rollups, admin tooling |
 | 3–4 | ~~Accessibility pass: colour-independent cues, silent rhythm mode~~ — **done, see below**. Remaining: larger touch targets, keyboard-only paths |
 | 3–4 | ~~Retention instrumentation~~ — **done, see "What we measure"**. Now it needs a real cohort: launch Nigeria and read the day-1 rate |
+| 3–4 | ~~Accounts and moderation~~ — **done, see "The client does not choose who it is"**. Now a Lagos-only soft launch is defensible |
 | 5–6 | Hausa, Yoruba, Igbo and Nigerian Pidgin interfaces; then French, Arabic, Portuguese, Hindi, Bahasa |
 | 7–8 | Lagos pilot with three universities and two radio groups; instrument retention |
 | 9–10 | Curve re-fit from real pilot data; publish the first national norms |

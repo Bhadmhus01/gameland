@@ -189,8 +189,10 @@ await step("the live wisdom answer key is sealed until you have answered", async
   if (!sealed.sealed) throw new Error("the answer key leaked to a player who has not played");
   if (sealed.counts || sealed.shares) throw new Error("live counts were exposed while sealed");
 
-  // After answering, it opens.
-  await fetch(`${BASE}/api/submit`, {
+  // After answering, it opens — and it opens for the CREDENTIAL, not for the
+  // name. A name is public on the leaderboard, so a name-based gate could be
+  // satisfied by anyone who could read one.
+  const played = await fetch(`${BASE}/api/submit`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -200,13 +202,21 @@ await step("the live wisdom answer key is sealed until you have answered", async
       country: "NG",
       raw: { choice: 1 },
     }),
-  });
-  const open = await (
-    await fetch(`${BASE}/api/wisdom?pseudo=Peeking_${RUN}&country=NG`)
-  ).json();
+  }).then((r) => r.json());
+  const token = played?.account?.token;
+  if (!token) throw new Error("playing the wisdom round issued no account");
+
+  const open = await (await fetch(`${BASE}/api/wisdom?token=${token}`)).json();
   if (open.sealed) throw new Error("the key stayed sealed after playing");
   if (!open.shares) throw new Error("no shares returned after playing");
-  return `sealed before · ${open.total} answers revealed after`;
+
+  // The name alone must no longer be enough.
+  const byName = await (
+    await fetch(`${BASE}/api/wisdom?pseudo=Peeking_${RUN}&country=NG`)
+  ).json();
+  if (!byName.sealed) throw new Error("the key opened for a name with no credential");
+
+  return `sealed before · ${open.total} answers revealed to the credential · name alone still sealed`;
 });
 
 /* 5. Country data integrity. */
@@ -654,6 +664,17 @@ const post = (body) =>
     body: JSON.stringify(body),
   }).then((r) => r.json());
 
+/**
+ * Submit as one continuing player: carry the token the server issued, the way
+ * the client does. Without this every call would look like a brand-new device,
+ * which is what made the old "one attempt per day" rule skip the credential
+ * that did not exist yet.
+ */
+async function playOnce(body) {
+  const first = await post(body);
+  return { first, token: first?.account?.token || "" };
+}
+
 await step(`a result for any other discipline is refused (today is ${liveRound.discipline.name})`, async () => {
   // The exploit this guards: submit a perfect result for a discipline that is
   // not today's, and take rank 1 with the easiest curve.
@@ -750,6 +771,7 @@ await step("extra fields a client invents are ignored, never trusted", async () 
     percentile: 99.9,
     verdict: "Untouchable",
   });
+  if (!j.account) throw new Error("a first submission came back without an account");
   if (j.score === 1000) throw new Error("invented score was trusted");
   // Wisdom is scored against the world's answer, so its floor is not ours to set.
   if (liveDiscipline !== "wisdom" && j.score > 500) {
@@ -759,17 +781,26 @@ await step("extra fields a client invents are ignored, never trusted", async () 
 });
 
 await step("one scored attempt per day is enforced", async () => {
-  const one = (raw) =>
+  const one = (raw, token) =>
     post({
       roundId: liveRound.roundId,
       discipline: liveDiscipline,
       pseudo: "Daily_" + RUN,
       country: "NG",
       raw,
+      token,
     });
 
-  const first = await one(GOOD_RAW[liveDiscipline]); // excellent
-  const second = await one(WEAK_RAW[liveDiscipline]); // deliberately terrible, hoping to overwrite
+  const { first, token } = await playOnce({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: "Daily_" + RUN,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+  });
+  if (!token) throw new Error("no account was issued with the first score");
+  // Same person, deliberately terrible second result, hoping to overwrite.
+  const second = await one(WEAK_RAW[liveDiscipline], token);
   if (first.replay) throw new Error("first attempt was flagged as a replay");
   if (!second.replay) throw new Error("second attempt was scored again");
   if (second.score !== first.score) throw new Error("a second attempt changed the score");
@@ -1180,7 +1211,267 @@ await step("the player can switch counting off from inside the game", async () =
   return "one control · switches off, clears the queue, switches back on";
 });
 
-/* 13. Boot the whole application exactly as a browser would. */
+/* 13. Identity.
+ *
+ * Three holes had one cause: the server treating a string the client chose as
+ * an identity. It chose the discipline (fixed), it chose the day (fixed), and
+ * it chose who it was — which bought unlimited scored attempts in a single
+ * round, and opened the wisdom answer key to anyone who could read a name off
+ * the public leaderboard.
+ */
+
+await step("a first score is issued an account, and the token holds", async () => {
+  const name = "Tower_" + RUN;
+  const first = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: name,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+  });
+  if (!first.ok) throw new Error(JSON.stringify(first));
+  const acc = first.account;
+  if (!acc?.id || !acc?.token || !acc?.code) throw new Error("no account was issued");
+  if (!/^AYO-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(acc.code)) {
+    throw new Error(`recovery code has the wrong shape: ${acc.code}`);
+  }
+  if (/[OI01]/.test(acc.code.slice(4).replace(/-/g, ""))) {
+    throw new Error("the recovery code contains a character that is misread by hand");
+  }
+
+  // The second score for that account, under a different NAME, is still the
+  // same one attempt. This is the exact hole: it used to be five for five.
+  const renamed = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: "Tower2_" + RUN,
+    country: "NG",
+    raw: WEAK_RAW[liveDiscipline],
+    token: acc.token,
+  });
+  if (!renamed.replay) throw new Error("renaming bought a second scored attempt");
+  if (renamed.score !== first.score) throw new Error("the standing score changed");
+
+  return `account ${acc.id} · rename to a new name still returns ${renamed.score}`;
+});
+
+await step("a forged token is refused, and never becomes a new account", async () => {
+  // The distinction that closes the hole. If a bad token minted a fresh
+  // account, a cheater would send nonsense to buy another attempt.
+  const a = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: "Forge1_" + RUN,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+    token: "obviously-not-a-real-token",
+  });
+  if (a.ok) throw new Error("a forged token was accepted");
+  if (a.error !== "bad_account") throw new Error(`refused as ${a.error}`);
+  if (a.account) throw new Error("a forged token was issued a brand-new account");
+
+  // A truncated real token must not be accepted either.
+  const real = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: "Forge2_" + RUN,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+  });
+  const cut = real.account.token.slice(0, 12);
+  const b = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: "Forge3_" + RUN,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+    token: cut,
+  });
+  if (b.ok) throw new Error("a truncated token was accepted");
+  return "forged 401 · truncated 401 · neither minted an account";
+});
+
+await step("one name, one player, per round", async () => {
+  const name = "Unique_" + RUN;
+  const a = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: name,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+  });
+  if (!a.ok) throw new Error("the first claim on the name failed");
+
+  // A different device, same name and country.
+  const b = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: name,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+  });
+  if (b.ok) throw new Error("two accounts played the same name in one round");
+  if (b.error !== "name_taken") throw new Error(`refused as ${b.error}`);
+
+  // Same name, different country is a different entry — allowed.
+  const c = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: name,
+    country: "GH",
+    raw: GOOD_RAW[liveDiscipline],
+  });
+  if (!c.ok) throw new Error(`a different country was blocked: ${c.error}`);
+  return "same name+country refused · same name elsewhere allowed";
+});
+
+await step("names are checked before they reach a national board", async () => {
+  const bad = [
+    ["markup", "<i>x", "name_characters"],
+    ["markup, long enough to trip length first", "AVeryLongNicknameIndeed", "name_too_long"],
+    ["control characters", "Ada\u0000Baba", "name_characters"],
+    ["too short", "Bo", "name_too_short"],
+    ["no letters", "12345", "name_needs_letters"],
+    ["placeholder", "AAAA", "name_not_varied"],
+    ["slur, plainly", "n1gger", "name_blocked"],
+    ["slur, unobfuscated", "faggot_here", "name_blocked"],
+    ["impersonating the game", "xX_Ayo_Official_Xx", "name_reserved"],
+  ];
+  for (const [label, name, expected] of bad) {
+    const r = await post({
+      roundId: liveRound.roundId,
+      discipline: liveDiscipline,
+      pseudo: name,
+      country: "NG",
+      raw: GOOD_RAW[liveDiscipline],
+    });
+    if (r.ok) throw new Error(`${label} was accepted onto the board`);
+    if (r.error !== expected) throw new Error(`${label} refused as ${r.error}, expected ${expected}`);
+  }
+
+  // And real names from everywhere must still work.
+  // Suffixed with the run id: a name is unique per round, so an unsuffixed list
+  // collides with itself on a second run. The bases are kept short so the
+  // apostrophe and the non-Latin cases still fit inside the 18-character rule.
+  const good = ["Ọ̀ṣun_Adé", "O'Falae", "Zanele_Dl", "अनन्या", "Nguyễn_An"].map(
+    (n) => `${n}_${RUN}`
+  );
+  for (const name of good) {
+    const r = await post({
+      roundId: liveRound.roundId,
+      discipline: liveDiscipline,
+      pseudo: name,
+      country: "NG",
+      raw: GOOD_RAW[liveDiscipline],
+    });
+    if (!r.ok) throw new Error(`a real name was rejected: ${name} -> ${r.error}`);
+  }
+  return `${bad.length} refused · ${good.length} real names accepted`;
+});
+
+await step("a refused submission never mints an account", async () => {
+  const before = await fetch(`${BASE}/api/retention`).then((r) => r.json());
+  const attempts = [
+    { pseudo: "Bad_Name", country: "ZZ", raw: GOOD_RAW[liveDiscipline] },
+    { pseudo: "<script>", country: "NG", raw: GOOD_RAW[liveDiscipline] },
+    { pseudo: "Fine_Name", country: "NG", raw: { nonsense: 1 } },
+  ];
+  for (const body of attempts) {
+    const r = await post({ roundId: liveRound.roundId, discipline: liveDiscipline, ...body });
+    if (r.ok) throw new Error(`a malformed submission was accepted: ${JSON.stringify(body)}`);
+    if (r.account) throw new Error("a refused submission was issued an account");
+  }
+  const after = await fetch(`${BASE}/api/retention`).then((r) => r.json());
+  if (after.funnel.total.open !== before.funnel.total.open) {
+    throw new Error("a refused submission touched the funnel");
+  }
+  return `${attempts.length} refusals · none minted an account`;
+});
+
+await step("the wisdom answer key opens to a credential, not to a name", async () => {
+  // The old gate accepted any name that had already played, and names are
+  // public on the leaderboard — so a client that had never answered could
+  // borrow one and read the live distribution.
+  const board = await fetch(`${BASE}/api/leaderboard`).then((r) => r.json());
+  const someone = (board.topHumans || [])[0];
+  if (someone) {
+    const borrowed = await fetch(
+      `${BASE}/api/wisdom?pseudo=${encodeURIComponent(someone.pseudo)}&country=${someone.iso}`
+    ).then((r) => r.json());
+    if (!borrowed.sealed) throw new Error("a borrowed public name opened the sealed key");
+  }
+
+  // No credential at all: sealed, and it says why.
+  const anon = await fetch(`${BASE}/api/wisdom`).then((r) => r.json());
+  if (!anon.sealed) throw new Error("the key was served to a client with no account");
+  if (anon.reason !== "no_account") throw new Error(`reason was ${anon.reason}`);
+
+  // A real credential that has played: open.
+  const mine = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: "Key_" + RUN,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+  });
+  if (liveDiscipline === "wisdom") {
+    const opened = await fetch(`${BASE}/api/wisdom?token=${mine.account.token}`).then((r) => r.json());
+    if (opened.sealed) throw new Error("my own account could not open the key after playing");
+    return "borrowed name still sealed · own token opens it";
+  }
+  // On any other discipline the key belongs to a different round; the credential
+  // must not open it just because it has played something today.
+  const other = await fetch(`${BASE}/api/wisdom?token=${mine.account.token}`).then((r) => r.json());
+  if (other.sealed && other.reason !== "not_yet_played") {
+    throw new Error(`unexpected reason ${other.reason}`);
+  }
+  return "borrowed name sealed · credential honoured · wrong round stays sealed";
+});
+
+await step("a lost phone is recovered with the key, not with the device", async () => {
+  const name = "Lost_" + RUN;
+  const first = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: name,
+    country: "NG",
+    raw: GOOD_RAW[liveDiscipline],
+  });
+  const { id, token, code } = first.account;
+
+  // A brand-new device with no local storage at all.
+  const rec = await fetch(`${BASE}/api/account/recover`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: code.toLowerCase() }), // typed by a human
+  }).then((r) => r.json());
+  if (!rec.ok) throw new Error(`recovery failed: ${JSON.stringify(rec)}`);
+  if (rec.accountId !== id) throw new Error("recovery returned a different account");
+
+  // The recovered device is the same player: same one attempt, same score.
+  const after = await post({
+    roundId: liveRound.roundId,
+    discipline: liveDiscipline,
+    pseudo: name,
+    country: "NG",
+    raw: WEAK_RAW[liveDiscipline],
+    token: rec.token,
+  });
+  if (!after.replay) throw new Error("the recovered device was treated as a new player");
+  if (after.score !== first.score) throw new Error("the recovered tower lost its score");
+
+  // A wrong key is refused, and the endpoint is rate limited.
+  const wrong = await fetch(`${BASE}/api/account/recover`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: "AYO-AAAA-AAAA-AAAA" }),
+  });
+  if (wrong.status === 200) throw new Error("a wrong recovery key was accepted");
+
+  return `same account ${id} · same score ${after.score} · wrong key refused`;
+});
+
+/* 14. Boot the whole application exactly as a browser would. */
 console.log("\napp boot (full client, live server)");
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));

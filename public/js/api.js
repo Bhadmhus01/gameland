@@ -42,9 +42,19 @@ export const api = {
   feed(date) {
     return jget("/api/feed", { date });
   },
-  /** The live answer key is sealed until the player has answered. */
-  wisdom(date, pseudo, country) {
-    return jget("/api/wisdom", { date, pseudo, country });
+  /**
+   * The live answer key is sealed until the player has answered.
+   *
+   * It is opened with the account token, not with a name. A name is public on
+   * the leaderboard, so anyone could borrow one and read the key without ever
+   * playing.
+   */
+  wisdom(date) {
+    return jget("/api/wisdom", { date, token: store.account.token });
+  },
+  /** Bring an account across from another device using its recovery code. */
+  recover(code) {
+    return jpost("/api/account/recover", { code });
   },
   me(pseudo, country) {
     return jget("/api/me", { pseudo, country });

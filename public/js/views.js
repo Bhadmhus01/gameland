@@ -15,6 +15,30 @@ import { api } from "./api.js";
 import { store } from "./store.js";
 import { h, mount, sheet, toast, confetti, fmt, ordinal, buzz } from "./ui.js";
 import { buildGame } from "./games.js";
+
+/**
+ * The name rules, mirrored from the server so a player is told before they
+ * play rather than after. The server is still the authority — this only moves
+ * the bad news earlier. Keep the two in step: `cleanName` in server.mjs.
+ */
+const NAME_OK = /^[\p{L}\p{M}\p{N} '._-]{3,18}$/u;
+const NAME_BLOCKED = /nigg|fagg|kike|spic|chink|wetback|tranny|rape|paedo|pedo|nazi|hitler|kkk|jihad|terroris|fuck|fck|shit|sh1t|cunt|whore|slut|porn|viagra|casino/;
+const NAME_RESERVED = /(^|[^a-z])(ayo|official|admin|support|moderator|staff|helpdesk)([^a-z]|$)/;
+
+function nameProblem(raw) {
+  const name = String(raw || "").trim().replace(/\s+/g, " ");
+  if (name.length < 3) return "A nickname needs at least 3 characters.";
+  if (name.length > 18) return "A nickname can be at most 18 characters.";
+  if (!NAME_OK.test(name)) return "Letters, numbers, spaces and _ - . ' only — no symbols.";
+  const letters = [...name.matchAll(/\p{L}/gu)].map((m) => m[0].toLowerCase());
+  if (letters.length < 3) return "A nickname needs at least 3 letters.";
+  if (new Set(letters).size < 3) return "Try a name with a bit more variety than that.";
+  const flat = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (NAME_BLOCKED.test(flat)) return "That nickname is not allowed. Please pick another.";
+  const words = name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (words.some((w) => NAME_RESERVED.test(w))) return "That nickname is reserved. Please pick another.";
+  return "";
+}
 import * as analytics from "./analytics.js";
 
 /* ------------------------------------------------------------------ helpers */
@@ -130,8 +154,11 @@ export function openIdentitySheet(app, onDone) {
       class: "btn btn-primary btn-block",
       text: "Take my place",
       onclick: () => {
-        const p = String(pseudo || "").trim();
-        if (p.length < 2) return toast("Give yourself a nickname of at least 2 characters.", "err");
+        const p = String(pseudo || "").trim().replace(/\s+/g, " ");
+        // Checked here as well as on the server, because finding out after
+        // playing a round that your name is not allowed means losing the round.
+        const why = nameProblem(p);
+        if (why) return toast(why, "err");
         if (!selected || !BY_ISO.has(selected)) return toast("Choose your country.", "err");
         store.setIdentity(p, selected);
         toast(`Welcome, ${p}. Playing for ${nameOf(selected)}.`, "ok");
@@ -306,7 +333,17 @@ export function viewToday(app) {
         pseudo: identity.pseudo,
         country: identity.iso,
         raw,
+        // The credential, if this device has one. No token at all is what makes
+        // a new account; a wrong token is refused rather than quietly becoming
+        // one, which is what stops it buying a second attempt.
+        token: store.account.token || undefined,
       });
+      // A first score is when the server issues an account. Keep it, and show
+      // the recovery code once, while the player is looking at the screen.
+      if (res.account) {
+        store.setAccount(res.account);
+        appRef.state.freshCode = res.account.code;
+      }
       const streak = store.bumpStreak(round.date);
       analytics.track("finish");
       store.saveResult(round.roundId, {
@@ -366,6 +403,53 @@ function reveal(app, res, streak) {
   const wrap = h("div", { class: "stack" });
 
   const dist = app.state.board?.distribution || null;
+
+  // The one moment the recovery code is shown without being asked for: right
+  // after a player's first score, when they have something worth keeping. It
+  // stays in My Tower afterwards.
+  if (app.state.freshCode) {
+    const code = app.state.freshCode;
+    app.state.freshCode = null;
+    wrap.append(
+      h(
+        "div",
+        { class: "card", style: { borderColor: "rgba(255,212,0,.45)" } },
+        h("div", { class: "eyebrow", text: "Save this" }),
+        h("h3", { text: "Your tower needs a key" }),
+        h("p", {
+          class: "small muted",
+          style: { marginTop: "8px" },
+          text:
+            "This is your account — one line of text. Write it down or send it to yourself. " +
+            "If you lose this phone, or clear your browser, this code is the only way back to " +
+            "your scores and your streak. It is not a password you can reset, because we never " +
+            "asked you for an email.",
+        }),
+        h("div", {
+          text: code,
+          style: {
+            fontFamily: "Anton, sans-serif",
+            fontSize: "clamp(18px,5vw,26px)",
+            letterSpacing: ".08em",
+            margin: "12px 0",
+            wordBreak: "break-all",
+          },
+        }),
+        h("button", {
+          class: "btn ghost small",
+          text: "Copy my key",
+          onclick: async () => {
+            try {
+              await navigator.clipboard.writeText(code);
+              toast("Key copied. Keep it somewhere you will find it.", "ok");
+            } catch {
+              toast("Select the code and copy it by hand.", "err");
+            }
+          },
+        })
+      )
+    );
+  }
 
   wrap.append(
     h(
@@ -1245,10 +1329,112 @@ export function viewRules(app) {
    YOUR TOWER — personal career
    ========================================================================== */
 
+/**
+ * Your account, in the open: the key that brings this tower to another phone,
+ * and the way to use one.
+ *
+ * This exists because accounts make a new promise, and a promise with no visible
+ * mechanism is a claim. A player who cannot find their own key does not have one.
+ */
+function accountCard(app) {
+  const card = h("div", { class: "card" });
+  const paint = () => {
+    const acc = store.account;
+    card.replaceChildren(
+      h("div", { class: "eyebrow", text: "Your account" }),
+      h("h3", { text: "One line of text is your tower" }),
+      h("p", {
+        class: "small muted",
+        style: { marginTop: "8px" },
+        text: store.hasAccount
+          ? "Your scores belong to this account, not to this phone. If you lose the phone, this key brings them back."
+          : "Play one round and you get an account, with a key like this.",
+      })
+    );
+
+    if (store.hasAccount) {
+      card.append(
+        h("div", {
+          style: {
+            fontFamily: "Anton, sans-serif",
+            fontSize: "clamp(17px,4.6vw,24px)",
+            letterSpacing: ".08em",
+            margin: "12px 0",
+            wordBreak: "break-all",
+          },
+          text: acc.code || "(code hidden — recover with the key you saved)",
+        }),
+        h(
+          "div",
+          { class: "row wraprow", style: { gap: "10px" } },
+          h("button", {
+            class: "btn ghost small",
+            text: "Copy my key",
+            onclick: async () => {
+              try {
+                await navigator.clipboard.writeText(acc.code);
+                toast("Key copied.", "ok");
+              } catch {
+                toast("Select the code and copy it by hand.", "err");
+              }
+            },
+          }),
+          h("span", { class: "pill", text: `id ${acc.id}` })
+        )
+      );
+    }
+
+    // Bring a tower here from another device.
+    const input = h("input", {
+      class: "input",
+      placeholder: "AYO-XXXX-XXXX-XXXX",
+      autocapitalize: "characters",
+      spellcheck: "false",
+      style: { marginTop: "16px", textTransform: "uppercase" },
+    });
+    const go = h("button", {
+      class: "btn btn-primary small",
+      text: "Bring it here",
+      onclick: async () => {
+        const code = String(input.value || "").trim().toUpperCase();
+        if (!code) return toast("Type the key from your other device.", "err");
+        if (!store.hasAccount) return toast("Take a name and country first.", "err");
+        go.disabled = true;
+        go.textContent = "Looking…";
+        try {
+          const res = await api.recover(code);
+          store.setAccount({ id: res.accountId, token: res.token, code: res.code });
+          toast("Welcome back. This device is now your tower.", "ok");
+          paint();
+          app?.refresh?.();
+        } catch (err) {
+          toast(
+            err?.data?.error === "bad_code"
+              ? "That key did not match an account. Check for typos."
+              : "Could not reach the server. Try again in a moment.",
+            "err"
+          );
+        } finally {
+          go.disabled = false;
+          go.textContent = "Bring it here";
+        }
+      },
+    });
+    card.append(
+      h("div", { class: "tiny-up muted", style: { marginTop: "18px" }, text: "Playing on a new phone?" }),
+      h("div", { class: "row wraprow", style: { gap: "10px", marginTop: "6px" } }, input, go)
+    );
+  };
+  paint();
+  return card;
+}
+
 export function viewCareer(app) {
   const root = h("div", { class: "stack" });
   const local = store.history(60);
   const id = store.identity;
+
+  root.append(accountCard(app));
 
   root.append(
     h(
