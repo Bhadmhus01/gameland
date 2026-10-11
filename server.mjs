@@ -799,6 +799,9 @@ async function handleApi(req, res, url) {
       iso: e.iso,
       country: nameOf(e.iso),
       score: e.score,
+      // Public by design: it is what moderation acts on, and what lets a player
+      // recognise their own row without comparing display names.
+      accountId: e.accountId || null,
       demo: !!e.demo,
     }));
     const top =

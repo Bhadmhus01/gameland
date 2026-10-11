@@ -17,6 +17,19 @@ import { h, mount, sheet, toast, confetti, fmt, ordinal, buzz } from "./ui.js";
 import { buildGame } from "./games.js";
 
 /**
+ * Is this board row me?
+ *
+ * By account id where both sides have one, because that is what identity now
+ * means and it survives a rename. The name pair is the fallback for rows
+ * written before accounts existed.
+ */
+function isMe(row) {
+  const acc = store.account;
+  if (acc.id && row.accountId) return row.accountId === acc.id;
+  return row.pseudo === store.identity.pseudo && row.iso === store.identity.iso;
+}
+
+/**
  * The name rules, mirrored from the server so a player is told before they
  * play rather than after. The server is still the authority — this only moves
  * the bad news earlier. Keep the two in step: `cleanName` in server.mjs.
@@ -728,7 +741,7 @@ function worldPanel(app, board) {
             .map((p) =>
               h(
                 "tr",
-                { class: p.pseudo === store.identity.pseudo && p.iso === store.identity.iso ? "me" : "" },
+                { class: isMe(p) ? "me" : "" },
                 h("td", { class: "rank", text: String(p.rank) }),
                 h("td", {}, h("div", { class: "who" },
                   h("span", { class: "flag", text: flag(p.iso) }),
