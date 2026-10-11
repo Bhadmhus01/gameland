@@ -8,6 +8,8 @@
  *     median player on Earth scores ~500. (V1 curves: literature-based priors.
  *     V2: re-calibrated from live data at the end of every season.)
  *  3. Every week contains all seven faculties exactly once.
+ *  4. Colour is never the dimension being tested in any discipline, and every
+ *     discipline declares what it demands of a player's body in `needs`.
  */
 
 /* ---------------------------------------------------------------- utilities */
@@ -71,6 +73,7 @@ export const DISCIPLINES = [
     blurb: "Feel ten seconds. No clock. No counting tricks that work.",
     how: "Press start, then press stop when you believe exactly 10 seconds have passed. The closer you are, the higher you score.",
     why: "Every human carries a body clock. Rich or poor, north or south — nobody can buy a better one.",
+    needs: ["touch"],
     shareable: false,
   },
   {
@@ -80,6 +83,7 @@ export const DISCIPLINES = [
     blurb: "A flash of grains. How many were there?",
     how: "A jar is shown for just over two seconds. Then estimate how many were inside. Relative accuracy decides your score.",
     why: "Estimation is the oldest human maths — older than writing, older than money, shared by every culture.",
+    needs: ["sight"],
     shareable: false,
   },
   {
@@ -89,6 +93,7 @@ export const DISCIPLINES = [
     blurb: "Watch the pattern. Repeat it until it breaks.",
     how: "Symbols light up in order. Repeat each growing chain. One mistake ends the round.",
     why: "Working memory is the purest measure of raw mind, and it is distributed evenly across the planet.",
+    needs: ["sight"],
     shareable: false,
   },
   {
@@ -98,6 +103,7 @@ export const DISCIPLINES = [
     blurb: "The drum stops. Keep the beat alive.",
     how: "Tap along with four guided beats. The guide then disappears and you must keep tapping in perfect time for twelve beats.",
     why: "Rhythm is universal. Every society on Earth has a drum, and nobody needs to read to feel time.",
+    needs: ["touch", "sight or hearing"],
     shareable: false,
   },
   {
@@ -107,6 +113,7 @@ export const DISCIPLINES = [
     blurb: "Sixty-four shapes. One of them is wrong.",
     how: "A grid appears with a single shape slightly out of place. Find it. Speed and accuracy both count.",
     why: "Noticing what is out of place is survival skill, not schooling.",
+    needs: ["sight"],
     shareable: true,
   },
   {
@@ -116,6 +123,7 @@ export const DISCIPLINES = [
     blurb: "Find the rule. Name the future.",
     how: "A sequence of shapes obeys a hidden rule. Choose what comes next. Answer faster for more points.",
     why: "Culturally neutral shapes only — no flags, no letters, no money, no brand knowledge.",
+    needs: ["sight"],
     shareable: true,
   },
   {
@@ -125,6 +133,7 @@ export const DISCIPLINES = [
     blurb: "Can you think like eight billion people at once?",
     how: "Answer one human question. You then score how closely your answer matched humanity's dominant answer — the answer key does not exist until the world has written it.",
     why: "The only game where the answer key does not exist until humanity writes it — together.",
+    needs: ["reading or listening"],
     shareable: true,
   },
 ];

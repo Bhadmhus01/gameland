@@ -42,6 +42,49 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Read text aloud. Used by Think Like Earth, the one discipline whose content
+ * is language: without this, a player who cannot read loses that round outright.
+ * Purely additive — if the device has no speech synthesis, nothing is rendered
+ * and the round plays exactly as before.
+ */
+export function canSpeak() {
+  return typeof window !== "undefined" && "speechSynthesis" in window && typeof window.SpeechSynthesisUtterance === "function";
+}
+
+function speak(text) {
+  if (!canSpeak()) return;
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new window.SpeechSynthesisUtterance(text);
+    utterance.lang = navigator.language || "en";
+    utterance.rate = 0.95;
+    window.speechSynthesis.speak(utterance);
+  } catch {
+    /* speech is a bonus, never a requirement */
+  }
+}
+
+function stopSpeaking() {
+  try {
+    window.speechSynthesis?.cancel();
+  } catch {
+    /* nothing to stop */
+  }
+}
+
+function listenButton(text, label = "Listen") {
+  if (!canSpeak()) return null;
+  return h("button", {
+    class: "btn btn-ghost btn-sm",
+    text: `🔊 ${label}`,
+    onclick: (e) => {
+      e.preventDefault();
+      speak(text);
+    },
+  });
+}
+
 /* ---------------------------------------------------------------- shared ui */
 
 function shell(children) {
@@ -447,27 +490,38 @@ function makePulse(ctx) {
       h("h3", { text: "The Pulse" }),
       h("p", {
         class: "instr",
-        text: `Tap along with ${GUIDED_BEATS} guided beats. The guide then goes silent — keep tapping in exactly the same rhythm for ${SILENT_TAPS} beats.`,
+        text: `Tap along with ${GUIDED_BEATS} guided beats. The guide then stops — keep tapping in exactly the same rhythm for ${SILENT_TAPS} more beats.`,
       }),
       h("div", { class: "beat-dots" }, dots),
       primaryBtn("Start the drum", guide, "btn btn-green btn-lg"),
-      note("Sound on for the best result. Rhythm lives in the ear, not the eye.")
+      note("Sound is optional: the beat is shown and felt as well as heard.")
     );
   }
 
   async function guide() {
+    const strip = h("div", { class: "beat-strip" }, h("div", { class: "beat-dots" }, dots));
     mount(
       el,
       h("h3", { text: "Follow the drum" }),
-      h("div", { class: "beat-dots" }, dots),
-      h("p", { class: "tiny-up muted", style: { marginTop: "18px" }, text: "Tap along — feel the spacing" })
+      strip,
+      h("p", {
+        class: "tiny-up muted",
+        style: { marginTop: "18px", textAlign: "center" },
+        text: "Watch, listen or feel — all three carry the same beat",
+      }),
+      h("p", { class: "tiny muted", text: `${GUIDED_BEATS} beats, then the guide stops` })
     );
     await sleep(500);
     for (let i = 0; i < GUIDED_BEATS; i++) {
       if (!alive) return;
+      // Three channels, deliberately equally weighted, so the round does not
+      // depend on hearing. The visual pulse is full-width rather than a small
+      // dot, because a small dot is not an equal substitute for a drumbeat.
       beep(760, 0.07, 0.2);
       litDot(i);
       buzz(10);
+      strip.classList.add("pulse");
+      setTimeout(() => strip.classList.remove("pulse"), 150);
       await sleep(PULSE_PERIOD);
     }
     if (!alive) return;
@@ -580,11 +634,15 @@ function makeOdd(ctx) {
       const isOdd = i === p.oddIndex;
       const span = h("span", {
         text: p.glyph,
+        // ONE colour for every cell. The first version tinted the odd shape
+        // gold, which handed the answer to anyone who could see colour and
+        // left everyone else taking a genuinely harder test. Rotation is the
+        // only signal, so this measures attention rather than colour vision.
         style: {
           display: "inline-block",
           transform: isOdd ? `rotate(${p.angle}deg)` : "none",
           fontSize: "clamp(13px,3.6vw,24px)",
-          color: isOdd ? "#ffd469" : "#a9b6e0",
+          color: "#a9b6e0",
           lineHeight: "1",
         },
       });
@@ -597,7 +655,10 @@ function makeOdd(ctx) {
     mount(
       el,
       h("h3", { text: `Puzzle ${puzzle + 1} of ${ODD_PUZZLES}` }),
-      h("p", { class: "instr", text: "Sixty-four shapes. One is turned. Find it." }),
+      h("p", {
+        class: "instr",
+        text: "Sixty-four shapes, all identical. One is turned very slightly. Find it — every shape is the same colour, so your eye has to do the work.",
+      }),
       grid,
       liveBar.el,
       note(`${solved} found · Speed earns points`)
@@ -666,9 +727,48 @@ function makeOdd(ctx) {
    6. WHAT COMES NEXT — pattern  (TYPE B, per-player variant)
    ========================================================================= */
 
-const P_SHAPES = ["●", "▲", "■", "◆", "★", "✦"];
-const P_COLORS = ["#f7b32b", "#00a651", "#ff6b4a", "#7c5cff", "#4aa8ff"];
-const PATTERN_COUNT = 6;
+/* =========================================================================
+   6. WHAT COMES NEXT — pattern  (TYPE B, per-player variant)
+   ------------------------------------------------------------------------
+   FAIRNESS RULES, enforced by tools/smoke.mjs
+     1. Colour is never the dimension being tested. Every shape carries a
+        fixed colour, so colour can only ever reinforce shape identity.
+     2. No two options may be identical once colour is removed. If they were,
+        a colour-blind player who had correctly deduced the rule would still
+        face an unresolvable choice.
+   Rule 2 is the one the first version of this discipline broke: its opening
+   puzzle varied only the colour of identical shapes, so anyone with a
+   red-green colour vision deficiency could not solve it at all.
+   ========================================================================= */
+
+/**
+ * The five shapes and their fixed colours.
+ *
+ * The palette is a deliberate engineering result, not a style choice. It was
+ * fitted by maximising the minimum CIE76 difference across simulated
+ * protanopia, deuteranopia and tritanopia. This set scores 28.8 where the
+ * original palette scored 9.0 — the difference between "distinguishable" and
+ * "the same colour" for roughly 8% of men worldwide.
+ *
+ * A sixth colour was tested and rejected: every candidate either collapsed
+ * toward blue/violet under protanopia, or fell to ~1.4:1 contrast against the
+ * dark background and became invisible. Five is the honest maximum here.
+ */
+export const SHAPES = ["●", "▲", "■", "◆", "★"];
+export const SHAPE_COLOR = {
+  "●": "#f4f7ff", // cream
+  "▲": "#ffd400", // harvest gold
+  "■": "#ff6b4a", // coral
+  "◆": "#2f6bff", // blue
+  "★": "#00c2a0", // teal green
+};
+export const PALETTE = [...new Set(Object.values(SHAPE_COLOR))];
+
+/** Only these read clearly when rotated: a circle cannot show rotation at all. */
+const ROTATABLE = ["▲", "★"];
+
+/** Six puzzles per round, one from each family. */
+export const PATTERN_COUNT = 6;
 
 function shapeNode(sym, color, size = 1, rot = 0) {
   return h("span", {
@@ -683,100 +783,127 @@ function shapeNode(sym, color, size = 1, rot = 0) {
   });
 }
 
-/** Six culturally-neutral pattern families. Shapes, colour, size, count only. */
-function makePatternPuzzle(next, idx) {
-  const family = idx % 6;
-  const A = P_SHAPES[Math.floor(next() * P_SHAPES.length)];
-  let B = P_SHAPES[Math.floor(next() * P_SHAPES.length)];
-  while (B === A) B = P_SHAPES[Math.floor(next() * P_SHAPES.length)];
-  const c1 = P_COLORS[Math.floor(next() * P_COLORS.length)];
-  let c2 = P_COLORS[Math.floor(next() * P_COLORS.length)];
-  while (c2 === c1) c2 = P_COLORS[Math.floor(next() * P_COLORS.length)];
+/** A shape in its fixed colour. */
+function glyph(shape, size = 1, rot = 0) {
+  return shapeNode(shape, SHAPE_COLOR[shape], size, rot);
+}
 
+/** A vertical stack of n copies — the counting cue, with no colour involved. */
+function stack(shape, n) {
+  const w = h("span", {
+    style: {
+      display: "inline-flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: "2px",
+    },
+  });
+  for (let k = 0; k < n; k++) w.append(glyph(shape, 0.8));
+  return w;
+}
+
+/** A deterministic sample of n distinct shapes. */
+function sampleShapes(next, n) {
+  const pool = SHAPES.slice();
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, n);
+}
+
+/**
+ * A node's identity with every colour removed — what a player without colour
+ * vision actually sees. Two options sharing a signature are not two options.
+ */
+export function shapeSignature(node) {
+  const clone = node.cloneNode(true);
+  for (const el of [clone, ...clone.querySelectorAll("*")]) {
+    if (el.style && typeof el.style.removeProperty === "function") {
+      el.style.removeProperty("color");
+      el.style.removeProperty("background");
+      el.style.removeProperty("border-color");
+    }
+  }
+  return clone.outerHTML;
+}
+
+/**
+ * Six pattern families. Every one is solvable from shape, size, count or
+ * rotation alone. Colour is redundant everywhere.
+ */
+export function makePatternPuzzle(next, idx) {
+  const family = idx % 6;
   const items = [];
   let answer;
-  const distractors = [];
+  let distractors = [];
 
   if (family === 0) {
-    // Colour cycles through three.
-    const colours = [c1, c2, P_COLORS[(P_COLORS.indexOf(c1) + 2) % P_COLORS.length]];
-    for (let i = 0; i < 5; i++) items.push(shapeNode(A, colours[i % 3]));
-    answer = shapeNode(A, colours[5 % 3]);
-    for (const c of P_COLORS) if (c !== colours[5 % 3]) distractors.push(shapeNode(A, c));
+    // Three shapes cycling: A B C A B → C
+    const [a, b, c, d] = sampleShapes(next, 4);
+    items.push(glyph(a), glyph(b), glyph(c), glyph(a), glyph(b));
+    answer = glyph(c);
+    distractors = [glyph(a), glyph(b), glyph(d)];
   } else if (family === 1) {
-    // Two shapes alternating.
-    for (let i = 0; i < 5; i++) items.push(shapeNode(i % 2 ? B : A, c1));
-    answer = shapeNode(A, c1);
-    for (const s of P_SHAPES) if (s !== A) distractors.push(shapeNode(s, c1));
+    // Two shapes alternating: A B A B A → A
+    const [a, b, c, d] = sampleShapes(next, 4);
+    items.push(glyph(a), glyph(b), glyph(a), glyph(b), glyph(a));
+    answer = glyph(a);
+    distractors = [glyph(b), glyph(c), glyph(d)];
   } else if (family === 2) {
-    // Growing, then resetting to small.
-    const sizes = [1, 1.25, 1.5, 1.75, 1];
-    for (let i = 0; i < 5; i++) items.push(shapeNode(A, c1, sizes[i]));
-    answer = shapeNode(A, c1, 1.25);
-    distractors.push(shapeNode(A, c1, 1), shapeNode(A, c1, 1.5), shapeNode(A, c1, 1.75));
+    // Growing, then resetting: 1, 1.35, 1.7, 2.05, 1 → 1.35
+    const [a] = sampleShapes(next, 1);
+    for (const size of [1, 1.35, 1.7, 2.05, 1]) items.push(glyph(a, size));
+    answer = glyph(a, 1.35);
+    distractors = [glyph(a, 1), glyph(a, 1.7), glyph(a, 2.05)];
   } else if (family === 3) {
-    // Repeating count of 1,2,3.
-    const groups = [1, 2, 3, 1];
-    for (let g = 0; g < 4; g++) {
-      const wrap = h("span", {
-        style: {
-          display: "inline-flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: "2px",
-        },
-      });
-      for (let k = 0; k < groups[g]; k++) wrap.append(shapeNode(A, c1, 0.8));
-      items.push(wrap);
-    }
-    answer = (() => {
-      const w = h("span", { style: { display: "inline-flex", flexDirection: "column", alignItems: "center", gap: "2px" } });
-      for (let k = 0; k < 2; k++) w.append(shapeNode(A, c1, 0.8));
-      return w;
-    })();
-    for (const g of [1, 2, 3]) {
-      const w = h("span", { style: { display: "inline-flex", flexDirection: "column", alignItems: "center", gap: "2px" } });
-      for (let k = 0; k < g; k++) w.append(shapeNode(A, c1, 0.8));
-      if (g !== 2) distractors.push(w);
-    }
+    // Counting 1, 2, 3, then back to 1 → 2
+    const [a] = sampleShapes(next, 1);
+    for (const n of [1, 2, 3, 1]) items.push(stack(a, n));
+    answer = stack(a, 2);
+    distractors = [stack(a, 1), stack(a, 3), stack(a, 4)];
   } else if (family === 4) {
-    // Rotation stepping 0, 45, 90, 135, 180 → 225.
-    for (let i = 0; i < 5; i++) items.push(shapeNode("▲", c1, 1, i * 45));
-    answer = shapeNode("▲", c1, 1, 225);
-    for (const a of [45, 90, 315]) distractors.push(shapeNode("▲", c1, 1, a));
+    // Rotation stepping 45°: 0, 45, 90, 135, 180 → 225
+    const a = ROTATABLE[Math.floor(next() * ROTATABLE.length)];
+    for (let i = 0; i < 5; i++) items.push(glyph(a, 1, i * 45));
+    answer = glyph(a, 1, 225);
+    distractors = [glyph(a, 1, 45), glyph(a, 1, 90), glyph(a, 1, 315)];
   } else {
-    // Shape and colour both step together through a 3-cycle.
-    const shapes = [A, B, P_SHAPES[(P_SHAPES.indexOf(A) + 3) % P_SHAPES.length]];
-    const cols = [c1, c2, P_COLORS[(P_COLORS.indexOf(c2) + 1) % P_COLORS.length]];
-    for (let i = 0; i < 5; i++) items.push(shapeNode(shapes[i % 3], cols[i % 3]));
-    answer = shapeNode(shapes[2], cols[2]);
-    distractors.push(
-      shapeNode(shapes[2], cols[0]),
-      shapeNode(shapes[0], cols[2]),
-      shapeNode(shapes[1], cols[1])
-    );
+    // Every shape appears twice: A A B B C → C
+    const [a, b, c, d] = sampleShapes(next, 4);
+    items.push(glyph(a), glyph(a), glyph(b), glyph(b), glyph(c));
+    answer = glyph(c);
+    distractors = [glyph(a), glyph(b), glyph(d)];
   }
 
-  // Keep only genuinely different distractors, then top up.
-  const seen = new Set([answer.outerHTML]);
-  const opts = [answer];
-  for (const d of distractors) {
-    if (opts.length >= 4) break;
-    if (seen.has(d.outerHTML)) continue;
-    seen.add(d.outerHTML);
-    opts.push(d);
+  // Deduplicate by colour-blind signature, never by appearance. Two options
+  // that differ only in colour are the same option to a colour-blind player.
+  const seen = new Set();
+  const opts = [];
+  for (const candidate of [answer, ...distractors]) {
+    const sig = shapeSignature(candidate);
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    opts.push(candidate);
   }
-  let guard = 0;
-  while (opts.length < 4 && guard++ < 40) {
-    const filler = shapeNode(
-      P_SHAPES[Math.floor(next() * P_SHAPES.length)],
-      P_COLORS[Math.floor(next() * P_COLORS.length)],
-      1,
-      Math.floor(next() * 8) * 45
-    );
-    if (seen.has(filler.outerHTML)) continue;
-    seen.add(filler.outerHTML);
-    opts.push(filler);
+
+  // Top up from unused shapes if a family ever fell short. Never by colour.
+  if (opts.length < 4) {
+    for (const shape of sampleShapes(next, SHAPES.length)) {
+      if (opts.length >= 4) break;
+      const candidate = glyph(shape, 1, 0);
+      const sig = shapeSignature(candidate);
+      if (seen.has(sig)) continue;
+      seen.add(sig);
+      opts.push(candidate);
+    }
+  }
+
+  if (opts.length < 4) {
+    throw new Error(`pattern family ${family}: could not build four distinct options`);
+  }
+  if (!opts.includes(answer)) {
+    throw new Error(`pattern family ${family}: the answer was lost during dedupe`);
   }
 
   // Shuffle options, remembering the correct one.
@@ -787,9 +914,8 @@ function makePatternPuzzle(next, idx) {
     [order[i], order[j]] = [order[j], order[i]];
   }
   const shuffled = order.map((i) => opts[i]);
-  const correctIndex = shuffled.indexOf(answer);
 
-  return { items, options: shuffled, correctIndex };
+  return { family, items, options: shuffled, correctIndex: shuffled.indexOf(answer) };
 }
 
 function makePattern(ctx) {
@@ -938,13 +1064,26 @@ function makeWisdom(ctx) {
         )
       );
     });
+
+    // This is the only discipline whose content is language, so it is the only
+    // one a non-reader loses outright. Speech synthesis removes that barrier on
+    // any device that has it, at no cost to devices that do not.
+    const spoken = `${question.q} The choices are: ${question.options
+      .map((o, i) => `${i + 1}. ${o}`)
+      .join(". ")}.`;
+
     mount(
       el,
-      h("h3", { text: "Think Like Earth" }),
+      h(
+        "div",
+        { class: "row", style: { justifyContent: "center", gap: "10px", flexWrap: "wrap" } },
+        h("h3", { text: "Think Like Earth" }),
+        listenButton(spoken, "Listen to the question")
+      ),
       h("p", { class: "instr", style: { fontSize: "1.12rem", color: "#f4f7ff" }, text: question.q }),
       grid,
       liveBar.el,
-      note("Answer for yourself — then you score the share of the world that agreed with you.")
+      note("Answer for yourself — you then score on how closely you matched humanity's answer.")
     );
     liveBar.start();
     timer = window.setTimeout(() => choose(0), 20400);
@@ -960,6 +1099,7 @@ function makeWisdom(ctx) {
     clearTimeout(timer);
     liveBar?.stop();
     el._cleanupKey?.();
+    stopSpeaking();
     if (!alive) return;
     beep(760, 0.08, 0.18);
     ctx.onFinish({ choice: i });
@@ -972,6 +1112,7 @@ function makeWisdom(ctx) {
       alive = false;
       clearTimeout(timer);
       liveBar?.stop();
+      stopSpeaking();
       el._cleanupKey?.();
     },
   };

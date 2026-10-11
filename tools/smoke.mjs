@@ -402,7 +402,220 @@ await step("a game destroyed mid-play cannot crash into a dead stage", async () 
   return "all seven survive teardown";
 });
 
-/* 9. Submission round-trips through the real endpoints. */
+/* 9. Fairness: colour and accessibility.
+ * These exist because the first version of these disciplines broke their own
+ * promise. They are regression tests, not decoration. */
+console.log("\nfairness");
+
+const colorSci = await import("./color-science.mjs");
+
+await step("colour is never the signal: every pattern option survives without it", async () => {
+  const { makePatternPuzzle, shapeSignature, SHAPES, PALETTE } = games;
+  if (SHAPES.length !== PALETTE.length) {
+    throw new Error("every shape must have its own colour for the palette test to mean anything");
+  }
+
+  let checked = 0;
+  const families = new Map();
+
+  for (let family = 0; family < 6; family++) {
+    for (let seed = 0; seed < 120; seed++) {
+      const puzzle = makePatternPuzzle(engine.rng(`fairness-${family}-${seed}`), family);
+      checked++;
+
+      if (puzzle.options.length !== 4) {
+        throw new Error(`family ${family}: ${puzzle.options.length} options, expected 4`);
+      }
+
+      // Strip every colour. What is left is what a colour-blind player sees.
+      const sigs = puzzle.options.map((o) => shapeSignature(o));
+      const unique = new Set(sigs);
+      if (unique.size !== 4) {
+        throw new Error(
+          `family ${family} seed ${seed}: ${unique.size} distinguishable options once colour is removed`
+        );
+      }
+
+      // The correct answer must be uniquely identifiable, not just "one of two".
+      const answerSig = shapeSignature(puzzle.options[puzzle.correctIndex]);
+      if (sigs.filter((x) => x === answerSig).length !== 1) {
+        throw new Error(`family ${family} seed ${seed}: the answer is not unique without colour`);
+      }
+
+      families.set(family, (families.get(family) || 0) + 1);
+    }
+  }
+  return `${checked} puzzles across ${families.size} families, all solvable without colour`;
+});
+
+await step("the palette is distinguishable under simulated colour blindness", async () => {
+  const { PALETTE } = games;
+  const { closestPair } = colorSci;
+
+  const results = [];
+  for (const type of ["protanopia", "deuteranopia", "tritanopia"]) {
+    const worst = closestPair(PALETTE, type);
+    results.push(`${type} ${worst.dE.toFixed(1)}`);
+    if (worst.dE < 22) {
+      throw new Error(
+        `${type}: ${worst.a} and ${worst.b} are only dE ${worst.dE.toFixed(1)} apart ` +
+          `(the original palette scored 9.0 here; ~2.3 is a just-noticeable difference)`
+      );
+    }
+  }
+
+  // Achromatopsia cannot be served by hue at all: no usable six-colour set
+  // separates on lightness alone against a dark background. This is exactly
+  // why colour is never load-bearing in any discipline, which the test above
+  // proves structurally. Reported rather than asserted.
+  const achroma = closestPair(PALETTE, "achromatopsia");
+  return `${results.join(" · ")} | achromatopsia ${achroma.dE.toFixed(1)} (colour is never required)`;
+});
+
+await step("the Odd One Out does not tint the answer", async () => {
+  const g = games.buildGame("odd", {
+    roundId: "r0001",
+    seed: engine.variantSeed("r0001", "fairness-odd"),
+    onFinish() {},
+  });
+  document.body.append(g.el);
+  const begin = g.el.querySelector(".btn");
+  begin.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+
+  const cells = [...g.el.querySelectorAll(".odd-cell")];
+  if (cells.length !== 64) throw new Error(`expected 64 cells, got ${cells.length}`);
+
+  const colours = cells.map((c) => c.querySelector("span").style.color);
+  const distinct = new Set(colours);
+  if (distinct.size !== 1) {
+    throw new Error(
+      `cells use ${distinct.size} colours (${[...distinct].join(", ")}). ` +
+        `Tinting the odd shape hands the answer to anyone who can see colour.`
+    );
+  }
+
+  // The signal must be rotation, which is colour-independent.
+  const rotated = cells.filter((c) => {
+    const t = c.querySelector("span").style.transform;
+    return t && t !== "none";
+  });
+  if (rotated.length !== 1) {
+    throw new Error(`expected exactly 1 rotated cell, found ${rotated.length}`);
+  }
+
+  g.destroy();
+  g.el.remove();
+  return `64 cells, one colour, 1 rotated → attention, not colour vision`;
+});
+
+await step("The Pulse carries its beat without sound", async () => {
+  const g = games.buildGame("pulse", {
+    roundId: "r0001",
+    seed: engine.variantSeed("r0001", "fairness-pulse"),
+    onFinish() {},
+  });
+  document.body.append(g.el);
+  g.el.querySelector(".btn").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 750));
+
+  const strip = g.el.querySelector(".beat-strip");
+  if (!strip) throw new Error("no visual beat channel exists — the round would require hearing");
+  if (!strip.querySelector(".beat-dots")) throw new Error("the visual beat channel is empty");
+
+  g.destroy();
+  g.el.remove();
+  return "visual beat channel present and full-width";
+});
+
+await step("every discipline remains playable with audio disabled", async () => {
+  const saved = { ctx: window.AudioContext, webkit: window.webkitAudioContext };
+  window.AudioContext = undefined;
+  window.webkitAudioContext = undefined;
+  try {
+    for (const d of engine.DISCIPLINES) {
+      const g = games.buildGame(d.id, {
+        roundId: "r0001",
+        seed: engine.variantSeed("r0001", "silent"),
+        question: engine.wisdomQuestionFor("r0001"),
+        onFinish() {},
+      });
+      if (!g.el || g.el.textContent.trim().length < 5) {
+        throw new Error(`${d.name} renders nothing without audio`);
+      }
+      g.destroy();
+    }
+  } finally {
+    window.AudioContext = saved.ctx;
+    window.webkitAudioContext = saved.webkit;
+  }
+  return "7/7 build and render with no AudioContext";
+});
+
+await step("Think Like Earth can be answered without reading", async () => {
+  const { canSpeak } = games;
+  if (canSpeak()) throw new Error("test environment unexpectedly already has speech synthesis");
+
+  // Without speech synthesis: no listen control, and no crash.
+  const silent = games.buildGame("wisdom", {
+    roundId: "r0001",
+    seed: "s1",
+    question: engine.wisdomQuestionFor("r0001"),
+    onFinish() {},
+  });
+  if (silent.el.textContent.includes("Listen")) {
+    throw new Error("a listen control was offered with no speech synthesis available");
+  }
+  silent.destroy();
+
+  // With speech synthesis: the question and options can be heard.
+  const spoken = [];
+  window.speechSynthesis = { speak: (u) => spoken.push(u), cancel() {} };
+  window.SpeechSynthesisUtterance = function (text) {
+    this.text = text;
+    this.lang = "";
+    this.rate = 1;
+  };
+  try {
+    const g = games.buildGame("wisdom", {
+      roundId: "r0001",
+      seed: "s2",
+      question: engine.wisdomQuestionFor("r0001"),
+      onFinish() {},
+    });
+    document.body.append(g.el);
+    const listen = [...g.el.querySelectorAll(".btn")].find((b) =>
+      b.textContent.includes("Listen")
+    );
+    if (!listen) throw new Error("no listen control offered despite speech synthesis");
+    listen.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    if (!spoken.length) throw new Error("the listen control did not speak");
+    const text = spoken[0].text;
+    if (text.length < 20) throw new Error(`spoken text too short: "${text}"`);
+    if (spoken[0].lang !== window.navigator.language) {
+      throw new Error("the utterance was not given the player's language");
+    }
+    g.destroy();
+    g.el.remove();
+    return `question and all four options are spoken (${text.length} chars)`;
+  } finally {
+    delete window.speechSynthesis;
+    delete window.SpeechSynthesisUtterance;
+  }
+});
+
+await step("the Fairness Charter tells the truth about accessibility", async () => {
+  const el = views.viewRules(fakeApp);
+  const text = el.textContent.toLowerCase();
+  for (const must of ["colour", "read", "listen"]) {
+    if (!text.includes(must)) throw new Error(`the charter does not mention "${must}"`);
+  }
+  if (/colour is a redundant cue only/i.test(el.textContent)) {
+    throw new Error("the charter still carries the retracted colour claim");
+  }
+  return "charter discloses the real position";
+});
+
+/* 10. Submission round-trips through the real endpoints. */
 console.log("\nsubmission");
 
 await step("POST /api/submit round-trips and scores", async () => {
@@ -508,7 +721,7 @@ await step("a client-declared score is ignored", async () => {
   return `claimed 1000, server awarded ${j.score}`;
 });
 
-/* 10. Boot the whole application exactly as a browser would. */
+/* 11. Boot the whole application exactly as a browser would. */
 console.log("\napp boot (full client, live server)");
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));

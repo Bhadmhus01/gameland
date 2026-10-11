@@ -38,7 +38,7 @@ BASE=http://127.0.0.1:3100 node tools/seed.mjs  # against another instance
 
 ```bash
 npm install --no-save jsdom       # only the test needs this
-node tools/smoke.mjs              # 33 checks: API, views, all 7 games, anti-cheat
+node tools/smoke.mjs              # 41 checks: API, views, all 7 games, fairness, anti-cheat
 BASE=http://127.0.0.1:3100 node tools/smoke.mjs
 ```
 
@@ -110,6 +110,37 @@ discipline showing unexplained regional bias is rewritten or retired in public.
   as humans.
 - No personal data is collected beyond a nickname, a country and a score.
 
+### Colour and accessibility
+
+Colour is **never** the dimension being tested. Every shape carries a fixed
+colour, so colour can only reinforce shape identity, and no discipline is decided
+by it. This is enforced by test, not intention: the suite generates 720 puzzles
+across all six pattern families, deletes every colour from the options, and
+asserts the answer is still uniquely identifiable. The attention round uses one
+colour for all 64 shapes, so rotation is the only signal.
+
+The palette was fitted by maximising the minimum CIE76 difference across
+simulated protanopia, deuteranopia and tritanopia — 28.8, where the original
+palette scored 9.0 (a just-noticeable difference is ~2.3). A sixth colour was
+tested and rejected: every candidate either collapsed toward blue under
+protanopia or fell to ~1.4:1 contrast against the background.
+
+| Discipline | Requires |
+|---|---|
+| The Inner Clock | touch |
+| The Jar · The Chain | sight |
+| The Pulse | touch, plus sight **or** hearing |
+| The Odd One Out · What Comes Next | sight |
+| Think Like Earth | reading **or** listening |
+
+All seven are tested to build and run with audio disabled. The rhythm round
+carries its beat three ways — sound, a full-width visual pulse, and vibration.
+*Think Like Earth* is the one discipline whose content is language, so its
+question and all four options can be read aloud on any device offering speech.
+Remaining gaps — motor impairment, English-only interface text, no screen-reader
+support for the visual disciplines — are documented in the concept document
+rather than glossed over.
+
 ### Offline resilience
 
 A dropped connection does not lose a round. The client queues the submission in
@@ -142,7 +173,8 @@ public/
   fonts/                    Self-hosted Anton + Inter (no third-party CDN, no tracking)
 tools/
   seed.mjs                  Seed named demonstration players
-  smoke.mjs                 33-check end-to-end suite (needs jsdom, test-only)
+  smoke.mjs                 41-check end-to-end suite (needs jsdom, test-only)
+  color-science.mjs         CVD simulation + perceptual distance, for the palette test
 data/store.json             Persisted rounds, players, boards
 docs/                       Concept, strategy and business document
 ```
@@ -171,7 +203,7 @@ client and server to disagree about them.
 
 Working today: the daily loop, all seven disciplines, three leaderboards, the
 national page, the Fairness Charter, career history, offline play, PWA install,
-and a 33-check end-to-end suite.
+and a 41-check end-to-end suite.
 
 Not yet built: accounts (identity is deliberately device-local for the prototype),
 season rollups, the filmed finale production, and moderation tooling. The daily

@@ -1072,7 +1072,7 @@ export function viewRules(app) {
     ["3. Free, and light",
       "The whole game runs in a browser on any phone. It works on a slow connection and queues your score when the network drops."],
     ["4. No knowledge required",
-      "No letters, no numbers, no flags, no brands, no trivia — only shapes, colour, sound and instinct, so literacy and schooling never decide a round."],
+      "No letters, no numbers, no flags, no brands, no trivia. Nothing here is taught in any school on Earth, so schooling cannot decide a round."],
     ["5. Population cannot win",
       "Nations are also ranked per human, using the square root of population. A country of forty million can beat a country of a billion."],
     ["6. You cannot copy a country",
@@ -1081,6 +1081,10 @@ export function viewRules(app) {
       "In Think Like Earth the correct answer is whatever the world actually chose, hour by hour. No expert decides it."],
     ["8. Honest about simulation",
       "While the game rolls out to new territories, simulated demo players keep the board alive. They are labelled ⚡ everywhere, and never called human."],
+    ["9. Colour is never the answer",
+      "Every shape carries a fixed colour, and no discipline is ever decided by colour. The attention and pattern rounds are provably solvable with colour vision removed — that is enforced by an automated test, not by intention. An earlier version of this game failed that test and was rebuilt."],
+    ["10. Honest about ability, too",
+      "Six of the seven disciplines need only sight or touch. Think Like Earth is the one whose content is language: its question and all four options can be read aloud on any device that offers speech, so it can be answered without reading. Instructions elsewhere are still text, and translated interfaces are on the roadmap — we would rather say that than imply a barrier has been removed when it has not."],
   ];
 
   root.append(
@@ -1109,10 +1113,11 @@ export function viewRules(app) {
           h(
             "div",
             { class: "faculty-row", style: { alignItems: "flex-start", flexDirection: "column", gap: "4px" } },
-            h("div", { class: "row", style: { width: "100%" } },
+            h("div", { class: "row wraprow", style: { width: "100%" } },
               h("span", { class: "pill gold", text: d.faculty }),
               h("b", { style: { fontFamily: "Anton, sans-serif", fontSize: "1.05rem", letterSpacing: ".04em" }, text: d.name }),
-              h("span", { class: "pill", style: { marginLeft: "auto" }, text: d.shareable ? "variant per player" : "identical for all" })),
+              h("span", { class: "pill", style: { marginLeft: "auto" }, text: d.shareable ? "variant per player" : "identical for all" }),
+              h("span", { class: "pill green", text: `needs: ${(d.needs || []).join(" + ")}` })),
             h("p", { class: "small muted", style: { margin: "2px 0 0" }, text: d.how }),
             h("p", { class: "tiny", style: { color: "#8b98c6", margin: 0 }, text: d.why })
           )

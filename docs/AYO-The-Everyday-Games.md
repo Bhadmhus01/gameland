@@ -273,7 +273,8 @@ contest is real, there is no audience and no sponsor.
 3. **Free, and light.** ~200 KB, works on 2G, queues your score when the network
    drops and sends it when you return.
 4. **No knowledge required.** No letters, numbers, flags, brands or trivia.
-   Literacy and schooling never decide a round.
+   Nothing here is taught in any school on Earth, so schooling cannot decide a
+   round.
 5. **Population cannot win.** Nations are ranked by median and by a per-human
    index.
 6. **You cannot copy a country.** Half the disciplines are physically
@@ -285,6 +286,14 @@ contest is real, there is no audience and no sponsor.
 8. **Honest about simulation.** Where the game has not launched, simulated
    players keep the board alive — labelled `demo` everywhere, never counted as
    humans.
+9. **Colour is never the answer.** Every shape carries a fixed colour, and no
+   discipline is decided by colour. The attention and pattern rounds are
+   provably solvable with colour vision removed — enforced by an automated
+   test, not by intention. An earlier version of this game failed that test and
+   was rebuilt.
+10. **Honest about ability, too.** Six of the seven disciplines need only sight
+    or touch; the seventh can be listened to. Each one declares what it demands
+    of a player's body, in the app, so the claim can be checked.
 
 ### How cheating is actually prevented
 
@@ -312,21 +321,88 @@ published, sourced, and revisable by evidence.
 
 ---
 
-## 9. Honest risks, and the answers
+## 9. Accessibility, stated plainly
+
+A game whose entire claim is fairness has to be able to show its work. These are
+the real positions, including the ones we got wrong.
+
+### What was broken
+
+The first version of this game failed its own promise in three places:
+
+1. **The pattern round's opening puzzle varied only the colour of identical
+   shapes.** All four answer options were the same shape in different colours.
+   A player with red-green colour vision deficiency — roughly 8% of men, about
+   300 million people — could not solve it at all, and the shipped palette made
+   it worse: the gold, green and coral sat directly in the deuteranopia
+   confusion zone, with a measured difference of **9.0**, where ~2.3 is a
+   just-noticeable difference.
+2. **The attention round tinted its answer gold** while the other sixty-three
+   shapes were pale blue. That handed the answer to anyone who could see colour
+   — so it was not an attention test at all — while making it genuinely harder
+   for everyone else.
+3. **Speech was the primary channel for the rhythm round**, with only a small
+   dot as a visual substitute — not an equal one.
+
+### What is now true
+
+- **Colour is never the dimension being tested, in any discipline.** Every shape
+  carries a fixed colour, so colour can only reinforce shape identity. No
+  discipline is decided by colour.
+- **The pattern round is provably solvable with colour removed.** An automated
+  test generates 720 puzzles across all six pattern families, deletes every
+  colour from the options, and asserts the correct answer is still uniquely
+  identifiable. If a future change reintroduced a colour-dependent puzzle, the
+  build would fail.
+- **The palette was re-fitted rather than guessed.** The new five-colour set
+  scores a minimum difference of **28.8** across simulated protanopia,
+  deuteranopia and tritanopia — up from 9.0. A sixth colour was tested and
+  rejected: every candidate either collapsed toward blue under protanopia or
+  fell to ~1.4:1 contrast against the background and became invisible.
+- **The attention round uses one colour for all sixty-four shapes.** Rotation is
+  the only signal, so it measures attention for everyone equally.
+- **The rhythm round carries its beat three ways** — sound, a full-width visual
+  pulse, and vibration — so it does not depend on hearing. All seven disciplines
+  are tested to build and run with audio disabled entirely.
+- **No discipline requires reading to compete.** Six of the seven need only sight
+  or touch. The social-intuition round is the one whose content is language, and
+  its question and all four options can be read aloud on any device that offers
+  speech. Each discipline now declares what it demands of a player's body, in the
+  Fair Play screen, so the claim is checkable rather than asserted.
+
+### What is still not fixed
+
+- **Motor impairments.** Rhythm and timing rounds require repeated precise taps
+  within a limited window. Larger targets would help; a genuinely accessible
+  alternative has not been designed.
+- **Instructions and interface are still English text.** Read-aloud removes the
+  barrier for the one round whose *content* is language, but a non-reader still
+  needs help to learn the rules the first time. Translated and spoken interfaces
+  are in the 90-day plan.
+- **No screen-reader support** for the visual disciplines. Several of them
+  measure visual attention by definition, which is a genuine tension rather than
+  an oversight — but the tension should be documented, not ignored.
+
+We would rather publish this list than imply the game is accessible because it
+is well-intentioned. The pattern-round defect in particular is exactly the kind
+of failure a fairness-first project has to be able to catch, admit and test
+against.
+
+## 10. Honest risks, and the answers
 
 | Risk | Honest assessment | Mitigation |
 |---|---|---|
 | **Some disciplines may carry cultural bias** (e.g. rhythm familiarity, or comfort with timed tasks) | Real, and the most serious technical risk. | Publish norms by country from day one; monitor residuals; retire biased disciplines publicly. The seven-faculty rotation means no single bias decides a season. |
 | **Cheating at scale** (emulators, farms, collusion) | Certain to be attempted. | Server-side scoring already removes the largest hole. Add device attestation, anomaly detection and prize-tier manual review as stakes rise. |
 | **Timezone fairness** | A player in New Zealand plays first and could leak the task. | Type A tasks are unshareable and Type B tasks are per-player — a leak is nearly worthless. This is a design property, not a policy. |
-| **Accessibility** | Colour-blind, deaf and motor-impaired players are currently underserved. | Colour is a redundant cue only; a silent rhythm mode and larger-touch targets are needed. This is a genuine gap. |
+| **Accessibility** | This was the project's worst failure: the first version of the pattern round varied only the *colour* of identical shapes, and the attention round tinted its answer gold. Roughly 8% of men worldwide could not solve the first, and the second was not an attention test for anyone who could see colour. | Fixed, and enforced by automated test rather than intention — see the accessibility section below. Motor impairments remain only partly addressed. |
 | **Cold start in a new country** | An empty national table kills retention. | The labelled demo world plus diaspora seeding. Honest labelling protects trust while it fills. |
 | **Fatigue with a daily format** | Real; day-40 drop-off is the norm. | Seven faculties in rotation, weekly towers, national pride, and practice mode for people who want more. |
 | **Being dismissed as a "Nigerian app"** | The bias exists and will be voiced. | Answer with the product: it is measurably fairer than the alternatives, and the disciplines are universal by construction. K-pop, Nollywood and Afrobeats ended the same argument in their industries. |
 
 ---
 
-## 10. What is already built
+## 11. What is already built
 
 This repository contains a **working prototype of the entire daily game**, not a
 mockup.
@@ -344,8 +420,10 @@ mockup.
 - One-scored-attempt-per-day enforced on the server
 - Offline play: the full game shell is cached, submissions queue and resync
 - Installable as a phone app (PWA), self-hosted fonts, no third-party trackers
-- A 33-check end-to-end test suite covering the API, every screen, every
-  discipline, all seven scoring curves, and every attempt to cheat the endpoint
+- A 41-check end-to-end test suite covering the API, every screen, every
+  discipline, all seven scoring curves, every attempt to cheat the endpoint, and
+  a fairness suite that deletes colour from 720 generated puzzles to prove the
+  pattern round is solvable without colour vision
 - 196 nations with populations, and a labelled demo world so no board is ever
   empty
 
@@ -366,12 +444,12 @@ is a contained change behind a single function.
 
 ---
 
-## 11. The next ninety days
+## 12. The next ninety days
 
 | Weeks | Deliverable |
 |---|---|
 | 1–2 | Accounts (phone-number optional), season rollups, admin tooling |
-| 3–4 | Accessibility pass: colour-independent cues, silent rhythm mode, larger targets |
+| 3–4 | ~~Accessibility pass: colour-independent cues, silent rhythm mode~~ — **done, see below**. Remaining: larger touch targets, keyboard-only paths |
 | 5–6 | Hausa, Yoruba, Igbo and Nigerian Pidgin interfaces; then French, Arabic, Portuguese, Hindi, Bahasa |
 | 7–8 | Lagos pilot with three universities and two radio groups; instrument retention |
 | 9–10 | Curve re-fit from real pilot data; publish the first national norms |
@@ -383,7 +461,7 @@ with a broadcaster attached.
 
 ---
 
-## 12. Why now
+## 13. Why now
 
 Three things became true at roughly the same moment:
 

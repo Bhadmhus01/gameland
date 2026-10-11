@@ -625,6 +625,35 @@ main { flex: 1 1 auto; padding: 22px 0 90px; }
   background: var(--gold);
   opacity: 0.85;
 }
+/* The Pulse's visual beat channel. Full-width on purpose: a small dot is not
+   an equal substitute for a drumbeat, and the round must not depend on hearing. */
+.beat-strip {
+  width: min(520px, 92vw);
+  height: 96px;
+  border-radius: var(--r);
+  border: 1px solid var(--line);
+  background: rgba(13, 19, 41, 0.7);
+  display: grid;
+  place-items: center;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.1s ease, background 0.1s ease, box-shadow 0.1s ease;
+}
+.beat-strip.pulse {
+  border-color: var(--gold);
+  background: rgba(46, 34, 6, 0.9);
+  box-shadow: 0 0 46px -6px rgba(247, 179, 43, 0.6);
+}
+.beat-strip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 212, 0, 0.3), transparent);
+  opacity: 0;
+  transition: opacity 0.08s ease;
+}
+.beat-strip.pulse::after { opacity: 1; }
+
 .beat-dots { display: flex; gap: 14px; align-items: center; justify-content: center; height: 100%; }
 .beat-dot {
   width: 16px; height: 16px; border-radius: 50%;
