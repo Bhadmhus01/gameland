@@ -1,0 +1,12 @@
+# Dependencies are test-only; the game itself has none.
+node_modules/
+package-lock.json
+
+# Runtime state. data/store.json is committed as seed content so a first run
+# is never a ghost town; throwaway stores are not.
+data/smoke-store.json
+data/test-store.json
+
+# Tooling noise
+.DS_Store
+*.log
