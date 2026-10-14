@@ -119,6 +119,13 @@ discipline showing unexplained regional bias is rewritten or retired in public.
 
 ### Hosting it inside another app
 
+**AYO stays standalone by design.** Its own domain, its own accounts, its own
+store, and its own front door. Other apps reach it through the JSON API and
+deep links — never by taking custody of a player's identity. The reasoning is
+in the concept document under "Standalone first"; the short version is that
+"one round, one score" is what makes this a competition, and it rests entirely
+on the account, so whoever owns the identity owns the fairness guarantee.
+
 AYO is deliberately frameable — `frame-ancestors *`, no `X-Frame-Options` — so
 it can be embedded. But an embedded page is a **third-party context**, and that
 breaks the thing the game is built on.

@@ -377,6 +377,40 @@ identity documents, and both would cost more privacy than this game is willing
 to spend. It is also why a place in the televised finale is confirmed in person,
 and why the daily board is a leaderboard rather than a qualification list.
 
+### Standalone first: AYO keeps its own front door
+
+**A decision, recorded so it is not relitigated: AYO is a standalone product.**
+It keeps its own domain, its own accounts, its own store, and its own identity.
+Other apps reach it through the documented JSON API and through deep links —
+never through a shared identity or a passport handed to a host.
+
+Three reasons, in order of how much they cost to get wrong:
+
+1. **Identity is the product.** "One round, one score" is what makes this a
+   competition rather than a pastime, and it rests entirely on the account. The
+   moment a host owns the identity, the host owns the fairness guarantee. This
+   was not theoretical: an embedded AYO produced four accepted submissions in a
+   single round, silently, because the hosting context could not keep a token.
+2. **A daily game needs its own door.** The streak, the season tower and the
+   recovery key accrue to whoever's surface the player returns to. If players
+   only ever meet the round inside another company's app, AYO is a feature of
+   that app — and features do not get their own brand, audience, or agency.
+3. **Partner from strength, not as a supplier.** A standalone game with its own
+   players can partner with anybody. A feature inside one app has one customer,
+   and no pricing power inside it.
+
+This does **not** mean isolation, and it does not mean "no partnerships." It
+means the partnership shape is chosen to preserve the front door: **the deep
+link.** A host offers "play today's round", the player arrives at AYO's own
+address, and AYO keeps the account. The host gets the daily habit; AYO keeps its
+identity. Distribution without dependency.
+
+**The honest cost of this choice:** a standalone game has to find its own
+players, and nobody finds you by accident. Distribution is genuinely the hardest
+part of this plan — which is exactly why borrowing an audience is worth doing,
+and exactly why it must happen without handing over the thing the game is built
+on.
+
 ### Distribution: borrowing somebody else's audience
 
 The hardest problem in this document is not the game. It is that a game nobody
