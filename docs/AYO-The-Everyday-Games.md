@@ -377,6 +377,43 @@ identity documents, and both would cost more privacy than this game is willing
 to spend. It is also why a place in the televised finale is confirmed in person,
 and why the daily board is a leaderboard rather than a qualification list.
 
+### Distribution: borrowing somebody else's audience
+
+The hardest problem in this document is not the game. It is that a game nobody
+has heard of has no players, and a daily competition needs a crowd on day one to
+mean anything. **The strongest answer is not an advertising budget — it is
+somebody else's audience.**
+
+Nigeria now has a proof that this works. *Lagos Life*, a browser life-sim built
+by one developer and launched on 1 October 2026, reached **two million players
+in a week** with 145,000 playing at once — with no app store, no install, and no
+marketing spend. It spread by link, on mobile data, through X and TikTok. That is
+exactly the distribution shape AYO needs, and it validates the whole premise of
+this document: build for the browser and for cheap phones, and Nigerians will
+come.
+
+It also points at the single most valuable partnership available. **A life sim
+and a daily challenge want opposite things and give each other what they lack.**
+A life sim is a long, open session — a player can spend an hour or forget it for
+a month. AYO is two minutes, once a day, and then it is over. The life sim has
+the audience and the session; AYO has the reason to come back *tomorrow*. That
+is not a competitor; it is the retention mechanic the other game has not built.
+
+Two ways to put AYO inside another app, and the honest difference between them:
+
+| | |
+|---|---|
+| **Deep link** — a "Today's round" button that opens AYO in its own tab | Full identity, streak and season tower. One line of integration, no shared state, no data exchange. **This is the one to propose first.** |
+| **Native module** — the host renders the round and calls the AYO API itself | The round appears inside the host's interface, which is better for engagement; but the host then holds the identity, and the two platforms have to agree on who a player is. Real work, real gain, worth doing second. |
+| **Iframe** | Technically supported, but third-party storage is blocked or partitioned, so a player ends up with a separate tower inside the host and the same round can be replayed by reloading. AYO now refuses to score in that context rather than pretend. |
+
+There is a limit worth stating openly: this is a partnership, not a build. It
+needs the other studio to want it, and the first approach should therefore be a
+demonstration and a proposal, not a specification. What AYO can bring to that
+conversation is a working prototype, a fairness charter that survives inspection,
+and instrumentation that can prove — with the host's own numbers — whether the
+daily round lifts the days people come back.
+
 ### Names, and the human in the loop
 
 Names appear on a world board, beside a national flag. Before this, the only
@@ -704,7 +741,7 @@ mockup.
 - One-scored-attempt-per-day enforced on the server
 - Offline play: the full game shell is cached, submissions queue and resync
 - Installable as a phone app (PWA), self-hosted fonts, no third-party trackers
-- A 74-check end-to-end test suite covering the API, every screen, every
+- A 77-check end-to-end test suite covering the API, every screen, every
   discipline, all seven scoring curves, every attempt to cheat the endpoint, and
   a fairness suite that deletes colour from 720 generated puzzles to prove the
   pattern round is solvable without colour vision

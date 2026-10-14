@@ -45,7 +45,7 @@ BASE=http://127.0.0.1:3100 node tools/seed.mjs  # against another instance
 
 ```bash
 npm install --no-save jsdom       # only the test needs this
-node tools/smoke.mjs              # 74 checks: API, views, all 7 games, fairness, retention, identity, season, input trust, anti-cheat
+node tools/smoke.mjs              # 77 checks: API, views, all 7 games, fairness, retention, identity, season, input trust, anti-cheat
 BASE=http://127.0.0.1:3100 node tools/smoke.mjs
 ```
 
@@ -116,6 +116,40 @@ discipline showing unexplained regional bias is rewritten or retired in public.
 - Simulated players are labelled `demo` everywhere they appear and never counted
   as humans.
 - No personal data is collected beyond a nickname, a country and a score.
+
+### Hosting it inside another app
+
+AYO is deliberately frameable — `frame-ancestors *`, no `X-Frame-Options` — so
+it can be embedded. But an embedded page is a **third-party context**, and that
+breaks the thing the game is built on.
+
+Third-party storage is either blocked outright (Safari) or partitioned per
+top-level site (Chrome). Either way the account token does not survive, and
+because a scored attempt is keyed to an account, a lost token means **a fresh
+attempt on every reload**. Measured before it was fixed: four reloads in a
+storage-blocked context produced four accepted submissions in one round, all
+scoring 1000.
+
+So the client now probes storage with a full round trip at boot — the only way
+to catch the dangerous case, where `setItem` succeeds and silently forgets,
+which a one-way check would report as perfectly healthy. If the probe fails:
+
+- the Today screen warns **before** the player taps anything,
+- a scored round is **refused**, with the reason and a link to open AYO in its
+  own tab,
+- practice still works, and nothing is recorded.
+
+| Way to integrate | What happens |
+|---|---|
+| **Deep link / portal** (a "Today's round" button that opens AYO in its own tab) | Full identity, streaks and season tower intact. **Recommended.** |
+| **Native module via the JSON API** | The host renders the round and stores the token itself. Deeper work; identity becomes the host's responsibility. |
+| **Iframe** | Works, and the guard keeps it honest — but identity is partitioned per site, so a player ends up with a separate tower inside the host. |
+
+**Honest limit:** the guard is a client-side courtesy, not a security boundary.
+The server cannot tell a tokenless first-timer from a tokenless cheater, which
+is the same accepted limitation already documented for free accounts. The guard
+stops *accidental* throwaway identities — the common case — and says so plainly
+instead of scoring a round that means nothing.
 
 ### The season
 
@@ -325,7 +359,7 @@ public/
   fonts/                    Self-hosted Anton + Inter (no third-party CDN, no tracking)
 tools/
   seed.mjs                  Seed named demonstration players
-  smoke.mjs                 74-check end-to-end suite (needs jsdom, test-only)
+  smoke.mjs                 77-check end-to-end suite (needs jsdom, test-only)
   color-science.mjs         CVD simulation + perceptual distance, for the palette test
 data/store.json             Persisted rounds, players, boards
 docs/                       Concept, strategy and business document
@@ -355,7 +389,7 @@ client and server to disagree about them.
 
 Working today: the daily loop, all seven disciplines, three leaderboards, the
 national page, the Fairness Charter, career history, offline play, PWA install,
-and a 74-check end-to-end suite.
+and a 77-check end-to-end suite.
 
 Not yet built: accounts (identity is deliberately device-local for the prototype),
 season rollups, the filmed finale production, and moderation tooling. The daily

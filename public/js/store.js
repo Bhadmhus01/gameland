@@ -32,6 +32,55 @@ const DEFAULTS = {
   analytics: null,
 };
 
+/**
+ * A storage-like object, or null — never throws.
+ *
+ * Reading `window.localStorage` can THROW in a third-party frame, so even
+ * touching it has to be guarded.
+ */
+function safeStorage() {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Can this browser actually keep anything?
+ *
+ * There are three possible states and only one is fine:
+ *
+ *   1. setItem works and getItem returns what was set  -> usable
+ *   2. setItem throws                                  -> blocked, as in a
+ *      third-party frame on Safari or some private modes
+ *   3. setItem silently does nothing                   -> "working" storage
+ *      that forgets, which is WORSE than blocked because it looks fine
+ *
+ * Only a round trip tells them apart, so that is what this does. A one-way
+ * check would report healthy storage in case 3 and hand out a throwaway
+ * identity on every single page load.
+ */
+export function storageProbe(ls) {
+  if (!ls) return "unavailable";
+  const key = "ayo.probe";
+  try {
+    ls.setItem(key, "1");
+    const back = ls.getItem(key);
+    ls.removeItem(key);
+    if (back !== "1") return "not_persisting";
+    return "";
+  } catch {
+    return "unavailable";
+  }
+}
+
+/**
+ * Computed once, at boot. If storage is broken we still play — but we must
+ * never pretend a score in this context is a score that can be kept.
+ */
+const STORAGE_PROBLEM = storageProbe(safeStorage());
+
 let state = load();
 
 function load() {
@@ -62,6 +111,16 @@ export const store = {
   },
   get account() {
     return state.account || { id: "", token: "", code: "" };
+  },
+  /**
+   * "" when storage works; a reason string when it does not.
+   *
+   * The reason matters more than the boolean: a player told "your browser is
+   * blocking storage" can act on it, and a promise that identity is safe while
+   * it is not is worse than no promise at all.
+   */
+  get storageProblem() {
+    return STORAGE_PROBLEM;
   },
   /** Remember what the server issued. Called once, on a player's first score. */
   setAccount({ id, token, code }) {

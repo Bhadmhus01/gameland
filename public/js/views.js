@@ -216,6 +216,39 @@ export function viewToday(app) {
   const meta = DISCIPLINE_BY_ID.get(d.id);
   const played = !!myResult;
 
+  /* ------------------------------------------- tell them before they tap
+   * A player who finds out only after tapping Play has already lost a round.
+   * This says it up front, on the screen they are looking at.
+   */
+  if (store.storageProblem) {
+    root.append(
+      h(
+        "div",
+        { class: "card", style: { borderColor: "rgba(255,107,74,.45)" } },
+        h("div", { class: "eyebrow", text: "Heads up" }),
+        h("h3", { text: "This page cannot keep your score" }),
+        h("p", {
+          class: "small muted",
+          style: { marginTop: "8px" },
+          text:
+            (store.storageProblem === "not_persisting"
+              ? "Your browser accepts data and then forgets it, so AYO cannot keep your identity here. "
+              : "Your browser is blocking storage on this page, so AYO cannot keep your identity here. ") +
+            "That usually means the game is open inside another app's window, or in a private tab. " +
+            "Today's round can still be played for practice, but it will not be scored — open AYO in its own tab to compete.",
+        }),
+        h("a", {
+          class: "btn btn-primary small",
+          style: { marginTop: "12px" },
+          href: location.href.split("?")[0].split("#")[0],
+          target: "_blank",
+          rel: "noopener",
+          text: "Open AYO in its own tab",
+        })
+      )
+    );
+  }
+
   /* ---------------------------------------------------------------- hero */
   const cdown = liveCountdown();
   root._cleanups = [() => cdown._stop?.()];
@@ -291,7 +324,74 @@ export function viewToday(app) {
   const stageHost = h("div", { class: "stack", id: "stageHost" });
   root.append(stageHost);
 
-  function startGame(appRef, { practice }) {
+  /**
+   * Refuse to score a round we cannot keep.
+   *
+   * Two things are true at once when a browser will not store anything:
+   * the player's identity cannot survive the page, and — because attempts are
+   * keyed to an account — every reload becomes a fresh, scoreable attempt.
+   * Verified: four reloads in a storage-blocked context produced four accepted
+   * submissions in one round.
+   *
+   * So a scored round is declined, honestly and with the reason, and practice
+   * stays available. Playing on regardless would hand out throwaway identities
+   * and quietly break the one-round-one-score promise the whole game rests on.
+   */
+  function refuseScored(host) {
+    mount(
+      host,
+      h(
+        "div",
+        { class: "card" },
+        h("div", { class: "eyebrow", text: "This page cannot keep your score" }),
+        h("h3", { text: "Your browser is blocking storage here" }),
+        h("p", {
+          class: "small muted",
+          style: { marginTop: "10px" },
+          text:
+            "AYO keeps your identity — your name, your country, your account and your season tower — " +
+            "on your own device, and this page will not let it. That usually means the game is running " +
+            "inside another app's window, or in a private browsing tab.",
+        }),
+        h("p", {
+          class: "small muted",
+          style: { marginTop: "10px" },
+          text:
+            "A scored round is not offered here, because without a saved identity the same round could be " +
+            "played again and again, and that would not be a fair contest for anyone.",
+        }),
+        h(
+          "div",
+          { class: "row wraprow", style: { gap: "10px", marginTop: "16px" } },
+          h("a", {
+            class: "btn btn-primary small",
+            href: location.href.split("?")[0].split("#")[0],
+            target: "_blank",
+            rel: "noopener",
+            text: "Open AYO in its own tab",
+          }),
+          h("button", {
+            class: "btn ghost small",
+            text: "Practice instead (not scored)",
+            onclick: () => startGame(appRef, { practice: true }, true),
+          })
+        ),
+        h("p", {
+          class: "tiny",
+          style: { marginTop: "12px", color: "#8b98c6" },
+          text: "Nothing you do here is recorded, and no account is created.",
+        })
+      )
+    );
+  }
+
+  function startGame(appRef, { practice }, bypassGuard = false) {
+    // A scored round requires somewhere to keep an identity. Practice does not,
+    // which is why the guard is here rather than around the whole stage.
+    if (!practice && !bypassGuard && store.storageProblem) {
+      refuseScored(stageHost);
+      return;
+    }
     if (!store.hasIdentity) {
       openIdentitySheet(appRef, () => startGame(appRef, { practice }));
       return;

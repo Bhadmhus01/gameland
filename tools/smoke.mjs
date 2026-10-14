@@ -1748,7 +1748,118 @@ await step("your tower follows your device, and only your device", async () => {
   return `one round held · ${mine.tower.roundsNeeded} rounds from the floor · a different device sees nothing`;
 });
 
-/* 15. Boot the whole application exactly as a browser would. */
+/* 15. Hosting: playing inside somebody else's page.
+ *
+ * AYO is deliberately frameable (frame-ancestors *), so it can be embedded. But
+ * an embedded page is a third-party context, and third-party storage is either
+ * blocked outright (Safari) or partitioned per top-level site (Chrome). Either
+ * way the account token does not survive, and because attempts are keyed to an
+ * account, a lost token means a fresh attempt on every reload.
+ *
+ * Proven before it was fixed: four reloads in a storage-blocked context produced
+ * four accepted submissions in a single round, all scoring 1000.
+ */
+
+await step("a storage round trip catches what a one-way check misses", async () => {
+  // `store` here is the module namespace, so the exported object is store.store.
+  const { storageProbe } = store;
+  const local = store.store;
+
+  const working = {
+    _d: {},
+    setItem(k, v) { this._d[k] = String(v); },
+    getItem(k) { return this._d[k] ?? null; },
+    removeItem(k) { delete this._d[k]; },
+  };
+  const throwing = {
+    setItem() { throw new Error("SecurityError"); },
+    getItem() { throw new Error("SecurityError"); },
+    removeItem() { throw new Error("SecurityError"); },
+  };
+  // The dangerous one: accepts writes and forgets them. A check that only
+  // called setItem would report this as perfectly healthy storage.
+  const forgetful = { setItem() {}, getItem() { return null; }, removeItem() {} };
+  const halfBroken = {
+    _d: {},
+    setItem(k, v) { this._d[k] = String(v); },
+    getItem() { return "something else"; },
+    removeItem() {},
+  };
+
+  if (storageProbe(working) !== "") throw new Error("working storage was reported as broken");
+  if (storageProbe(throwing) !== "unavailable") throw new Error(`throwing storage -> ${storageProbe(throwing)}`);
+  if (storageProbe(forgetful) !== "not_persisting") {
+    throw new Error(`a storage that silently forgets was reported as "${storageProbe(forgetful)}"`);
+  }
+  if (storageProbe(halfBroken) !== "not_persisting") throw new Error("storage returning the wrong value passed");
+  if (storageProbe(null) !== "unavailable") throw new Error("a missing storage object passed");
+
+  // And in the test environment, real storage must read as healthy.
+  if (local.storageProblem !== "") {
+    throw new Error(`jsdom storage was reported broken: ${local.storageProblem}`);
+  }
+  return "working ok · throwing blocked · silently-forgetting caught · wrong-value caught";
+});
+
+await step("a storage-blocked host is told, not silently scored", async () => {
+  // Force the blocked state the way a third-party frame would present it, and
+  // check that the two screens involved actually respond to it.
+  const local = store.store;
+  const original = Object.getOwnPropertyDescriptor(local, "storageProblem");
+  Object.defineProperty(local, "storageProblem", { get: () => "unavailable", configurable: true });
+  try {
+    if (local.storageProblem !== "unavailable") throw new Error("could not force the blocked state");
+
+    const host = document.createElement("div");
+    document.body.append(host);
+
+    // The Today screen must warn before the player taps anything.
+    const fakeApp = {
+      state: { round: liveRound, myResult: null, board: null, season: null, tower: null },
+      refresh() {}, go() {}, rerender() {}, state2: null,
+    };
+    host.append(views.viewToday(fakeApp));
+    if (!/cannot keep your score/i.test(host.textContent)) {
+      throw new Error("the Today screen did not warn about blocked storage");
+    }
+    if (!/Open AYO in its own tab/i.test(host.textContent)) {
+      throw new Error("the Today screen offered no way out");
+    }
+    host.remove();
+
+    // And the refusal path must produce the same honest message on its own.
+    const stage = document.createElement("div");
+    document.body.append(stage);
+    const app = {
+      state: { round: liveRound, myResult: null, board: null, season: null, tower: null },
+      refresh() {}, go() {}, rerender() {},
+    };
+    // viewToday builds its own stage host internally; drive it through the
+    // real module entry point instead of reaching inside.
+    host.append(views.viewToday(app));
+    const hasRefusal = /A scored round is not offered here|not be scored/i.test(host.textContent);
+    if (!hasRefusal) throw new Error("no explanation of why the round is not scored");
+    host.remove();
+    stage.remove();
+  } finally {
+    if (original) Object.defineProperty(local, "storageProblem", original);
+    else delete local.storageProblem;
+  }
+  if (local.storageProblem !== "") throw new Error("the forced state leaked into later tests");
+  return "warned on Today · explained on refusal · restored cleanly";
+});
+
+await step("the demo world and real players are still told apart after all this", async () => {
+  // Cheap guard against the temptation to "fix" embedding by counting embedded
+  // play separately, which would fragment the board.
+  const board = await fetch(`${BASE}/api/leaderboard`).then((r) => r.json());
+  const rows = board.topHumans || [];
+  if (!rows.length) throw new Error("no humans on the board");
+  if (rows.some((e) => e.demo)) throw new Error("a demo player appeared among the humans");
+  return `${rows.length} humans, no demo among them`;
+});
+
+/* 16. Boot the whole application exactly as a browser would. */
 console.log("\napp boot (full client, live server)");
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
